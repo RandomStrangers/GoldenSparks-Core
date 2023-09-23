@@ -889,9 +889,9 @@ static void MainScreen_TickCheckUpdates(struct MainScreen* s) {
 		latest  = MainScreen_GetVersion(&CheckUpdateTask.latestRelease);
 		current = MainScreen_GetVersion(&currentStr);
 #ifdef CC_BUILD_FLATPAK
-		LLabel_SetConst(&s->lblUpdate, latest > current ? "&aUpdate available" : "&eUp to date");
+		LLabel_SetConst(&s->lblUpdate, latest > current ? "&aCC Update  available" : "&eUp to date");
 #else
-		LLabel_SetConst(&s->lblUpdate, latest > current ? "&aNew release" : "&eUp to date");
+		LLabel_SetConst(&s->lblUpdate, latest > current ? "&aNew CC release" : "&eUp to date");
 #endif
 	} else {
 		LLabel_SetConst(&s->lblUpdate, "&cCheck failed");
@@ -972,15 +972,15 @@ static void MainScreen_Tick(struct LScreen* s_) {
 	MainScreen_TickSignIn(s);
 	MainScreen_TickFetchServers(s);
 }
-
 void MainScreen_SetActive(void) {
 	struct MainScreen* s = &MainScreen;
 	LScreen_Reset((struct LScreen*)s);
 	s->Init = MainScreen_Init;
 	s->Free = MainScreen_Free;
-	s->Tick = MainScreen_Tick;\
+	s->Tick = MainScreen_Tick; \
 
-	s->title         = "ClassiCube";
+		s->title = "&6G&eo&6l&ed&6e&en&6S&ep&6a&er&6k&es &6C&eo&6r&ee";
+
 	s->onEnterWidget = (struct LWidget*)&s->btnLogin;
 	Launcher_SetScreen((struct LScreen*)s);
 }
@@ -1419,7 +1419,7 @@ static void SettingsScreen_DPIScaling(struct LCheckbox* w) {
 #if defined CC_BUILD_WIN
 	DisplayInfo.DPIScaling = w->value;
 	Options_SetBool(OPT_DPI_SCALING, w->value);
-	Window_ShowDialog("Restart required", "You must restart ClassiCube before display scaling takes effect");
+	Window_ShowDialog("Restart required", "You must restart GoldenSparks Core before display scaling takes effect");
 #else
 	Window_ShowDialog("Restart required", "Display scaling is currently only supported on Windows");
 #endif
@@ -1640,14 +1640,14 @@ static void UpdatesScreen_Format(struct LLabel* lbl, const char* prefix, cc_uint
 }
 
 static void UpdatesScreen_FormatBoth(struct UpdatesScreen* s) {
-	UpdatesScreen_Format(&s->lblRel, "Latest release: ",   CheckUpdateTask.relTimestamp);
-	UpdatesScreen_Format(&s->lblDev, "Latest dev build: ", CheckUpdateTask.devTimestamp);
+	UpdatesScreen_Format(&s->lblRel, "Latest CC release: ",   CheckUpdateTask.relTimestamp);
+	UpdatesScreen_Format(&s->lblDev, "Latest CC dev build: ", CheckUpdateTask.devTimestamp);
 }
 
 static void UpdatesScreen_UpdateHeader(struct UpdatesScreen* s, cc_string* str) {
 	const char* message;
-	if ( s->release) message = "&eFetching latest release ";
-	if (!s->release) message = "&eFetching latest dev build ";
+	if ( s->release) message = "&eFetching latest CC release ";
+	if (!s->release) message = "&eFetching latest CC dev build ";
 
 	String_Format2(str, "%c%c", message, Updater_Info.builds[s->buildIndex].name);
 }
@@ -1708,7 +1708,7 @@ static void FetchUpdatesError(struct HttpRequest* req) {
 	cc_string str; char strBuffer[STRING_SIZE];
 	String_InitArray(str, strBuffer);
 
-	Launcher_DisplayHttpError(req, "fetching update", &str);
+	Launcher_DisplayHttpError(req, "fetching CC update", &str);
 	LLabel_SetText(&UpdatesScreen.lblStatus, &str);
 }
 
@@ -1743,8 +1743,8 @@ static void UpdatesScreen_Init(struct LScreen* s_) {
 	LLine_Init( &s->seps[0],   320,                   upd_seps0);
 	LLine_Init( &s->seps[1],   320,                   upd_seps1);
 
-	LLabel_Init( &s->lblRel, "Latest release: Checking..",   upd_lblRel);
-	LLabel_Init( &s->lblDev, "Latest dev build: Checking..", upd_lblDev);
+	LLabel_Init( &s->lblRel, "Latest CC release: Checking..",   upd_lblRel);
+	LLabel_Init( &s->lblDev, "Latest CC dev build: Checking..", upd_lblDev);
 	LLabel_Init( &s->lblStatus, "",           upd_lblStatus);
 	LButton_Init(&s->btnBack, 80, 35, "Back", upd_btnBack);
 
@@ -1809,7 +1809,7 @@ void UpdatesScreen_SetActive(void) {
 	s->Tick   = UpdatesScreen_Tick;
 	s->Free   = UpdatesScreen_Free;
 
-	s->title          = "Update game";
+	s->title          = "Update game to CC";
 	s->onEscapeWidget = (struct LWidget*)&s->btnBack;
 	Launcher_SetScreen((struct LScreen*)s);
 }

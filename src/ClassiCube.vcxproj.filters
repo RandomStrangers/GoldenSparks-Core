@@ -664,7 +664,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="..\misc\CCicon.rc">
+    <ResourceCompile Include="..\misc\GSCicon.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
   </ItemGroup>

@@ -43,6 +43,7 @@ src/ClassiCube*
 src/screenshots
 src/fontscache.txt
 src/.vs/
+.vs/
 #GCC object files
 *.o
 

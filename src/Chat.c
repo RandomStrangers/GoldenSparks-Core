@@ -500,7 +500,225 @@ static struct ChatCommand ClearDeniedCommand = {
 	}
 };
 
+static void ReplaceallCommand_Execute(const cc_string* args, int argsCount) {
+	if (argsCount != 2) {
+		Chat_AddRaw("&cUsage: /replaceall [old] [new]"); return;
+	}
+	float old; float new;
+	Convert_ParseFloat(&args[0], &old);
+	Convert_ParseFloat(&args[1], &new);
 
+	if (!Convert_ParseFloat(&args[0], &old) || !Convert_ParseFloat(&args[1], &new)) {
+		Chat_AddRaw("&cMust be integers!");
+		return;
+	}
+
+	if (old < 1) {
+
+		Chat_AddRaw("&cInvalid old value");
+		return;
+	}
+
+
+	for (int x = 0; x <= World.Length; x++) {
+		for (int y = 0; y <= World.Height; y++) {
+			for (int z = 0; z <= World.Width; z++) {
+
+				BlockID block = World_SafeGetBlock(x, y, z);
+				if (block == old) {
+					Game_ChangeBlock(x, y, z, new);
+
+				}
+			}
+		}
+	}
+
+
+
+
+
+}
+
+
+static struct ChatCommand ReplaceallCommand = {
+	"Replaceall", ReplaceallCommand_Execute,
+	COMMAND_FLAG_SINGLEPLAYER_ONLY,
+	{
+		"&a/replaceall [old] [new]",
+		"&ereplaces [old] block to [new].",
+	}
+};
+static void VersionCommand_Execute(const cc_string* args, int argsCount) {
+	cc_string ver = String_FromConst(GS_APP_VER);
+	Chat_AddRaw(&ver);
+}
+
+
+
+
+static void CpeTestCommand_Execute(const cc_string* args, int argsCount) {
+	cc_string message = String_FromReadonly("Hello, World!");
+
+	Chat_AddOf(&message, MSG_TYPE_ANNOUNCEMENT);
+	Chat_AddOf(&message, MSG_TYPE_BIGANNOUNCEMENT);
+	Chat_AddOf(&message, MSG_TYPE_SMALLANNOUNCEMENT);
+	Chat_AddOf(&message, MSG_TYPE_STATUS_1);
+	Chat_AddOf(&message, MSG_TYPE_STATUS_2);
+	Chat_AddOf(&message, MSG_TYPE_STATUS_3);
+	Chat_AddOf(&message, MSG_TYPE_BOTTOMRIGHT_1);
+	Chat_AddOf(&message, MSG_TYPE_BOTTOMRIGHT_2);
+	Chat_AddOf(&message, MSG_TYPE_BOTTOMRIGHT_3);
+	Chat_AddRaw("Hello, World!");
+}
+
+static struct ChatCommand CpeTestCommand = {
+	"CpeTest", CpeTestCommand_Execute,
+	0,
+	{
+		"&a/CpeTest",
+		"&ePrints 'Hello, World!' with different message types",
+	}
+};
+static struct ChatCommand VersionCommand = {
+	"Version", VersionCommand_Execute,
+	COMMAND_FLAG_UNSPLIT_ARGS,
+	{
+		"&a/client Version",
+		"&eOutputs version of &6G&eo&6l&ed&6e&en&6S&ep&6a&er&6k&es &6C&eo&6r&ee",
+	}
+};
+
+static void KickCommand_Execute(const cc_string* args, int argsCount) {
+	cc_string reason = String_FromReadonly("&aThanks for playing come back soon!");
+	cc_string msg = String_FromReadonly("&cKicked by &6G&eo&6l&ed&6e&en&6S&ep&6a&er&6k&es");
+	Game_Disconnect(&msg, &reason);
+
+}
+
+
+static struct ChatCommand KickCommand = {
+	"Kick", KickCommand_Execute,
+	0,
+	{
+		"&a/kick",
+		"&eKick You From the game!",
+	}
+};
+
+static void JumpCommand_Execute(const cc_string* args, int argsCount) {
+	struct Entity* e = &LocalPlayer_Instance.Base;
+	e->Velocity.Y = 0.42f;
+
+}
+
+static struct ChatCommand JumpCommand = {
+	"Jump", JumpCommand_Execute,
+	COMMAND_FLAG_SINGLEPLAYER_ONLY,
+	{
+				"&a/client jump",
+		"&eJUMP!",
+				"&cNote: &eOnly in Singleplayer",
+	}
+};
+
+static void HomeCommand_Execute(const cc_string* args, int argsCount) {
+	LocalPlayer_HandleRespawn();
+
+}
+
+static struct ChatCommand HomeCommand = {
+	"Home", HomeCommand_Execute,
+	COMMAND_FLAG_SINGLEPLAYER_ONLY,
+	{
+				"&a/client home",
+		"&eRespawn",
+				"&cNote: &eOnly in Singleplayer",
+	}
+};
+static void ClearCommand_Execute(const cc_string* args, int argsCount) {
+	/* Lets spam :skull: */
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("");
+	Chat_AddRaw("&cChat Cleared!");
+
+
+}
+
+static struct ChatCommand ClearCommand = {
+	"Clear", ClearCommand_Execute,
+	0,
+	{
+				"&a/client clear",
+		"&eAlternative Clear Command (From MCGalaxy)",
+	}
+};
 /*########################################################################################################################*
 *-------------------------------------------------------CuboidCommand-----------------------------------------------------*
 *#########################################################################################################################*/

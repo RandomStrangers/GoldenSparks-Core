@@ -499,42 +499,36 @@ CC_NOINLINE static void ClearTile(int x, int y, int width, int height,
 	}
 }
 
+cc_bool Launcher_BitmappedText(void) {
+	return (useBitmappedFont || Launcher_Theme.ClassicBackground) && hasBitmappedFont;
+}
+
 void Launcher_DrawBackground(struct Context2D* ctx, int x, int y, int width, int height) {
 	if (Launcher_Theme.ClassicBackground && dirtBmp.scan0) {
 		ClearTile(x, y, width, height, ctx, &stoneBmp);
-	} else {
+	}
+	else {
 		Gradient_Noise(ctx, Launcher_Theme.BackgroundColor, 6, x, y, width, height);
 	}
 }
 
 void Launcher_DrawBackgroundAll(struct Context2D* ctx) {
 	if (Launcher_Theme.ClassicBackground && dirtBmp.scan0) {
-		ClearTile(0,        0, ctx->width,               TILESIZE, ctx, &dirtBmp);
+		ClearTile(0, 0, ctx->width, TILESIZE, ctx, &dirtBmp);
 		ClearTile(0, TILESIZE, ctx->width, ctx->height - TILESIZE, ctx, &stoneBmp);
-	} else {
+	}
+	else {
 		Launcher_DrawBackground(ctx, 0, 0, ctx->width, ctx->height);
 	}
 }
-
-cc_bool Launcher_BitmappedText(void) {
-	return (useBitmappedFont || Launcher_Theme.ClassicBackground) && hasBitmappedFont;
-}
-
 void Launcher_DrawTitle(struct FontDesc* font, const char* text, struct Context2D* ctx) {
-	cc_string title = String_FromReadonly(text);
+	cc_string title = String_FromReadonly("&6G&eo&6l&ed&6e&en&6S&ep&6a&er&6k&es &6C&eo&6r&ee");
 	struct DrawTextArgs args;
 	int x;
-
-	/* Skip dragging logo when very small window to save space */
-	if (WindowInfo.Height < 300) return;
-
-	DrawTextArgs_Make(&args, &title, font, false);
+	DrawTextArgs_Make(&args, &title, font, true);
 	x = ctx->width / 2 - Drawer2D_TextWidth(&args) / 2;
-
-	Drawer2D.Colors['f'] = BITMAPCOLOR_BLACK;
 	Context2D_DrawText(ctx, &args, x + Display_ScaleX(4), Display_ScaleY(4));
-	Drawer2D.Colors['f'] = BITMAPCOLOR_WHITE;
-	Context2D_DrawText(ctx, &args, x,                     0);
+	Drawer2D.Colors['f'] = BITMAPCOLOR_BLACK;
 }
 
 void Launcher_MakeTitleFont(struct FontDesc* font) {
@@ -542,4 +536,5 @@ void Launcher_MakeTitleFont(struct FontDesc* font) {
 	Font_Make(font, 32, FONT_FLAGS_NONE);
 	Drawer2D.BitmappedText = false;
 }
+
 #endif
