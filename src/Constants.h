@@ -10,10 +10,11 @@ Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 #define GS_APP_VER "1.0.5"
 #define GAME_API_VER 1
 #if defined CC_BUILD_OG
-#define GAME_APP_NAME  "ClassiCube 1.3.5"
-#define GAME_APP_TITLE "ClassiCube 1.3.5"
+#define GAME_APP_NAME  "ClassiCube 1.3.6"
+#define GAME_APP_TITLE "ClassiCube 1.3.6"
 #else
-#define GAME_APP_NAME  "&eGolden&6Sparks &eCore &61.0.5"
+#define CC_APP_NAME  "ClassiCube 1.3.6"
+#define GAME_APP_NAME "&eGolden&6Sparks &eCore &61.0.5"
 #define GAME_APP_TITLE "GoldenSparks Core 1.0.5"
 #endif
 
