@@ -554,6 +554,6 @@ void Launcher_DrawTitle(struct FontDesc* font, const char* text, struct Context2
 void Launcher_MakeTitleFont(struct FontDesc* font) {
 	Drawer2D.BitmappedText = Launcher_BitmappedText();
 	Font_Make(font, 32, FONT_FLAGS_NONE);
-	Drawer2D.BitmappedText = true;
+	Drawer2D.BitmappedText = false;
 }
 #endif
