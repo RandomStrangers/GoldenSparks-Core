@@ -1,21 +1,21 @@
 name: Notify failure
 description: Sends a notification that compiling a build has failed
 inputs:
-  BOT_USERNAME: GSC BuildBot
+  BOT_USERNAME: 
     description: 'Username to use for the discord bot message'
     default: 'GSC BuildBot'
     required: false
     type: string
-  BOT_AVATAR: https://raw.githubusercontent.com/GoldenSparks/GoldenSparks-Core/master/misc/GSC.png
+  BOT_AVATAR: 
     description: 'URL to use for the avatar of the discord bot message'
     default: 'https://raw.githubusercontent.com/GoldenSparks/GoldenSparks-Core/master/misc/GSC.png'
     required: false
     type: string
-  NOTIFY_MESSAGE: <@804431499867717713> <@999409543001931788> Error building client!
+  NOTIFY_MESSAGE: 
     description: 'Notification message to send'
     required: true
     type: string
-  WEBHOOK_URL: https://discord.com/api/webhooks/1162454912253313156/VG2x-Tsq-jLvjrf-UuWrHMPHzw3jXTT2oPu8fLz4YXRcRaiNZZgTjQmZApb7YqW_hY2Y
+  WEBHOOK_URL: 
     description: 'Discord webhook URL'
     required: true
     type: string
