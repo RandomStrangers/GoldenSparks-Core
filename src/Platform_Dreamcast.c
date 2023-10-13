@@ -34,11 +34,11 @@ const char* Platform_AppNameSuffix = " Dreamcast";
 *#########################################################################################################################*/
 cc_uint64 Stopwatch_ElapsedMicroseconds(cc_uint64 beg, cc_uint64 end) {
 	if (end < beg) return 0;
-	return (end - beg) / 1000;
+	return end - beg;
 }
 
 cc_uint64 Stopwatch_Measure(void) {
-	return timer_ns_gettime64();
+	return timer_us_gettime64();
 }
 
 void Platform_Log(const char* msg, int len) {
@@ -415,13 +415,7 @@ cc_result Socket_CheckWritable(cc_socket s, cc_bool* writable) {
 /*########################################################################################################################*
 *--------------------------------------------------------Platform---------------------------------------------------------*
 *#########################################################################################################################*/
-cc_result Process_StartOpen(const cc_string* args) {
-	return ERR_NOT_SUPPORTED;
-}
-
 void Platform_Init(void) {
-	/*pspDebugSioInit();*/ 
-	
 	char cwd[600] = { 0 };
 	char* ptr = getcwd(cwd, 600);
 	Platform_Log1("WORKING DIR: %c", ptr);

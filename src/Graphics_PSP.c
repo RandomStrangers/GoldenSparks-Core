@@ -61,8 +61,7 @@ static void guInit(void) {
 	sceGuScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 	sceGuDisable(GU_SCISSOR_TEST);
 	
-	
-    //sceGuDisable(GU_CLIP_PLANES);
+	sceGuEnable(GU_CLIP_PLANES); // TODO: swap near/far instead of this?
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 	
 	sceGuFinish();
@@ -73,10 +72,23 @@ static void guInit(void) {
 
 static GfxResourceID white_square;
 void Gfx_Create(void) {
+	if (!Gfx.Created) guInit();
+	
 	Gfx.MaxTexWidth  = 512;
 	Gfx.MaxTexHeight = 512;
 	Gfx.Created      = true;
-	guInit();
+	gfx_vsync        = true;
+	
+	Gfx_RestoreState();
+}
+
+void Gfx_Free(void) { 
+	Gfx_FreeState();
+}
+
+cc_bool Gfx_TryRestoreContext(void) { return true; }
+
+void Gfx_RestoreState(void) {
 	InitDefaultResources();
 	
 	// 1x1 dummy white texture
@@ -86,14 +98,11 @@ void Gfx_Create(void) {
 	white_square = Gfx_CreateTexture(&bmp, 0, false);
 }
 
-void Gfx_Free(void) { 
+void Gfx_FreeState(void) {
 	FreeDefaultResources(); 
 	Gfx_DeleteTexture(&white_square);
 }
 
-cc_bool Gfx_TryRestoreContext(void) { return true; }
-void Gfx_RestoreState(void) { }
-void Gfx_FreeState(void) { }
 #define GU_Toggle(cap) if (enabled) { sceGuEnable(cap); } else { sceGuDisable(cap); }
 
 /*########################################################################################################################*
@@ -218,6 +227,7 @@ void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, f
 	matrix->row3.W = -1.0f;
 	matrix->row4.Z = -(2.0f * zFar * zNear) / (zFar - zNear);
 	matrix->row4.W =  0.0f;
+	// TODO: should direct3d9 one be used insted with clip range from 0,1 ?
 }
 
 

@@ -61,7 +61,7 @@ void Window_Show(void) { }
 void Window_SetSize(int width, int height) { }
 
 void Window_Close(void) {
-	/* TODO implement */
+	Event_RaiseVoid(&WindowEvents.Closing);
 }
 
 
@@ -122,7 +122,7 @@ static void ProcessTouchInput(void) {
 	if (touch.reportNum > 0) {
 		int x = touch.report[0].x;
 		int y = touch.report[0].y;
-		ProcessTouchPress(X, Y);
+		ProcessTouchPress(x, y);
 	}
 	Input_SetNonRepeatable(CCMOUSE_L, touch.reportNum > 0);
 }
@@ -134,6 +134,7 @@ static void ProcessPadInput(double delta) {
 	int res = sceCtrlPeekBufferPositive(0, &pad, 1);
 	if (res == 0) return; // no data available yet
 	if (res < 0)  return; // error occurred
+	// TODO: need to use cached version still? like GameCube/Wii
 	
 	HandleButtons(pad.buttons);
 	if (Input.RawMode)

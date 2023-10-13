@@ -500,225 +500,7 @@ static struct ChatCommand ClearDeniedCommand = {
 	}
 };
 
-static void ReplaceallCommand_Execute(const cc_string* args, int argsCount) {
-	if (argsCount != 2) {
-		Chat_AddRaw("&cUsage: /replaceall [old] [new]"); return;
-	}
-	float old; float new;
-	Convert_ParseFloat(&args[0], &old);
-	Convert_ParseFloat(&args[1], &new);
 
-	if (!Convert_ParseFloat(&args[0], &old) || !Convert_ParseFloat(&args[1], &new)) {
-		Chat_AddRaw("&cMust be integers!");
-		return;
-	}
-
-	if (old < 1) {
-
-		Chat_AddRaw("&cInvalid old value");
-		return;
-	}
-
-
-	for (int x = 0; x <= World.Length; x++) {
-		for (int y = 0; y <= World.Height; y++) {
-			for (int z = 0; z <= World.Width; z++) {
-
-				BlockID block = World_SafeGetBlock(x, y, z);
-				if (block == old) {
-					Game_ChangeBlock(x, y, z, new);
-
-				}
-			}
-		}
-	}
-
-
-
-
-
-}
-
-
-static struct ChatCommand ReplaceallCommand = {
-	"Replaceall", ReplaceallCommand_Execute,
-	COMMAND_FLAG_SINGLEPLAYER_ONLY,
-	{
-		"&a/replaceall [old] [new]",
-		"&ereplaces [old] block to [new].",
-	}
-};
-static void VersionCommand_Execute(const cc_string* args, int argsCount) {
-	cc_string ver = String_FromConst(GS_APP_VER);
-	Chat_AddRaw(&ver);
-}
-
-
-
-
-static void CpeTestCommand_Execute(const cc_string* args, int argsCount) {
-	cc_string message = String_FromReadonly("Hello, World!");
-
-	Chat_AddOf(&message, MSG_TYPE_ANNOUNCEMENT);
-	Chat_AddOf(&message, MSG_TYPE_BIGANNOUNCEMENT);
-	Chat_AddOf(&message, MSG_TYPE_SMALLANNOUNCEMENT);
-	Chat_AddOf(&message, MSG_TYPE_STATUS_1);
-	Chat_AddOf(&message, MSG_TYPE_STATUS_2);
-	Chat_AddOf(&message, MSG_TYPE_STATUS_3);
-	Chat_AddOf(&message, MSG_TYPE_BOTTOMRIGHT_1);
-	Chat_AddOf(&message, MSG_TYPE_BOTTOMRIGHT_2);
-	Chat_AddOf(&message, MSG_TYPE_BOTTOMRIGHT_3);
-	Chat_AddRaw("Hello, World!");
-}
-
-static struct ChatCommand CpeTestCommand = {
-	"CpeTest", CpeTestCommand_Execute,
-	0,
-	{
-		"&a/CpeTest",
-		"&ePrints 'Hello, World!' with different message types",
-	}
-};
-static struct ChatCommand VersionCommand = {
-	"Version", VersionCommand_Execute,
-	COMMAND_FLAG_UNSPLIT_ARGS,
-	{
-		"&a/client Version",
-		"&eOutputs version of &6G&eo&6l&ed&6e&en&6S&ep&6a&er&6k&es &6C&eo&6r&ee",
-	}
-};
-
-static void KickCommand_Execute(const cc_string* args, int argsCount) {
-	cc_string reason = String_FromReadonly("&aThanks for playing come back soon!");
-	cc_string msg = String_FromReadonly("&cKicked by &6G&eo&6l&ed&6e&en&6S&ep&6a&er&6k&es");
-	Game_Disconnect(&msg, &reason);
-
-}
-
-
-static struct ChatCommand KickCommand = {
-	"Kick", KickCommand_Execute,
-	0,
-	{
-		"&a/kick",
-		"&eKick You From the game!",
-	}
-};
-
-static void JumpCommand_Execute(const cc_string* args, int argsCount) {
-	struct Entity* e = &LocalPlayer_Instance.Base;
-	e->Velocity.Y = 0.42f;
-
-}
-
-static struct ChatCommand JumpCommand = {
-	"Jump", JumpCommand_Execute,
-	COMMAND_FLAG_SINGLEPLAYER_ONLY,
-	{
-				"&a/client jump",
-		"&eJUMP!",
-				"&cNote: &eOnly in Singleplayer",
-	}
-};
-
-static void HomeCommand_Execute(const cc_string* args, int argsCount) {
-	LocalPlayer_HandleRespawn();
-
-}
-
-static struct ChatCommand HomeCommand = {
-	"Home", HomeCommand_Execute,
-	COMMAND_FLAG_SINGLEPLAYER_ONLY,
-	{
-				"&a/client home",
-		"&eRespawn",
-				"&cNote: &eOnly in Singleplayer",
-	}
-};
-static void ClearCommand_Execute(const cc_string* args, int argsCount) {
-	/* Lets spam :skull: */
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("");
-	Chat_AddRaw("&cChat Cleared!");
-
-
-}
-
-static struct ChatCommand ClearCommand = {
-	"Clear", ClearCommand_Execute,
-	0,
-	{
-				"&a/client clear",
-		"&eAlternative Clear Command (From MCGalaxy)",
-	}
-};
 /*########################################################################################################################*
 *-------------------------------------------------------CuboidCommand-----------------------------------------------------*
 *#########################################################################################################################*/
@@ -867,32 +649,35 @@ static struct ChatCommand TeleportCommand = {
 /*########################################################################################################################*
 *------------------------------------------------------BlockEditCommand----------------------------------------------------*
 *#########################################################################################################################*/
-static cc_bool BlockEditCommand_GetTexture(const cc_string* value, int* tex) {
-	int maxTexs = ATLAS1D_MAX_ATLASES;
-
-	if (!Convert_ParseInt(value, tex)) {
-		Chat_AddRaw("&eBlockEdit: &eTexture must be an integer");
+static cc_bool BlockEditCommand_GetInt(const cc_string* str, const char* name, int* value, int min, int max) {
+	if (!Convert_ParseInt(str, value)) {
+		Chat_Add1("&eBlockEdit: &e%c must be an integer", name);
 		return false;
 	}
 
-	if (*tex < 0 || *tex >= maxTexs) {
-		Chat_Add1("&eBlockEdit: &eTexture must be between 0 and %i", &maxTexs);
+	if (*value < min || *value > max) {
+		Chat_Add3("&eBlockEdit: &e%c must be between %i and %i", name, &min, &max);
 		return false;
 	}
 	return true;
+}
+static cc_bool BlockEditCommand_GetTexture(const cc_string* str, int* tex) {
+	return BlockEditCommand_GetInt(str, "Texture", tex, 0, ATLAS1D_MAX_ATLASES - 1);
 }
 
 static void BlockEditCommand_Execute(const cc_string* args, int argsCount__) {
 	cc_string parts[3];
 	cc_string* prop;
 	cc_string* value;
-	int argsCount, block, tex;
+	int argsCount, block, v;
 
 	if (String_CaselessEqualsConst(args, "properties")) {
 		Chat_AddRaw("&eEditable block properties:");
 		Chat_AddRaw("&a  name &e- Sets the name of the block");
 		Chat_AddRaw("&a  all &e- Sets textures on all six sides of the block");
 		Chat_AddRaw("&a  sides &e- Sets textures on four sides of the block");
+		Chat_AddRaw("&a  left/right/front/back/top/bottom &e- Sets one texture");
+		Chat_AddRaw("&a  collide &e- Sets collision mode of the block");
 		return;
 	}
 
@@ -908,20 +693,49 @@ static void BlockEditCommand_Execute(const cc_string* args, int argsCount__) {
 		return;
 	}
 
+	/* TODO: Redo as an array */
 	prop  = &parts[1];
 	value = &parts[2];
 	if (String_CaselessEqualsConst(prop, "name")) {
 		Block_SetName(block, value);
 	} else if (String_CaselessEqualsConst(prop, "all")) {
-		if (!BlockEditCommand_GetTexture(value, &tex)) return;
+		if (!BlockEditCommand_GetTexture(value, &v)) return;
 
-		Block_SetSide(tex, block);
-		Block_Tex(block, FACE_YMAX) = tex;
-		Block_Tex(block, FACE_YMIN) = tex;
+		Block_SetSide(v, block);
+		Block_Tex(block, FACE_YMAX) = v;
+		Block_Tex(block, FACE_YMIN) = v;
 	} else if (String_CaselessEqualsConst(prop, "sides")) {
-		if (!BlockEditCommand_GetTexture(value, &tex)) return;
+		if (!BlockEditCommand_GetTexture(value, &v)) return;
 
-		Block_SetSide(tex, block);
+		Block_SetSide(v, block);
+	} else if (String_CaselessEqualsConst(prop, "left")) {
+		if (!BlockEditCommand_GetTexture(value, &v)) return;
+
+		Block_Tex(block, FACE_XMIN) = v;
+	} else if (String_CaselessEqualsConst(prop, "right")) {
+		if (!BlockEditCommand_GetTexture(value, &v)) return;
+
+		Block_Tex(block, FACE_XMAX) = v;
+	} else if (String_CaselessEqualsConst(prop, "bottom")) {
+		if (!BlockEditCommand_GetTexture(value, &v)) return;
+
+		Block_Tex(block, FACE_YMIN) = v;
+	}  else if (String_CaselessEqualsConst(prop, "top")) {
+		if (!BlockEditCommand_GetTexture(value, &v)) return;
+
+		Block_Tex(block, FACE_YMAX) = v;
+	} else if (String_CaselessEqualsConst(prop, "front")) {
+		if (!BlockEditCommand_GetTexture(value, &v)) return;
+
+		Block_Tex(block, FACE_ZMIN) = v;
+	} else if (String_CaselessEqualsConst(prop, "back")) {
+		if (!BlockEditCommand_GetTexture(value, &v)) return;
+
+		Block_Tex(block, FACE_ZMAX) = v;
+	} else if (String_CaselessEqualsConst(prop, "collide")) {
+		if (!BlockEditCommand_GetInt(value, "Collide mode", &v, 0, COLLIDE_CLIMB)) return;
+
+		Blocks.Collide[block] = v;
 	} else {
 		Chat_Add1("&eBlockEdit: &eUnknown property %s &e(See &a/client help blockedit&e)", prop);
 		return;

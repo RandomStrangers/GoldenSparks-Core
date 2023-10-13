@@ -1,21 +1,22 @@
 #ifndef CC_CONSTANTS_H
 #define CC_CONSTANTS_H
-/*
+/* 
 Defines useful constants
 Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
 
 #define GAME_MAX_CMDARGS 5
-#define GAME_APP_VER "1.3.6"
-#define GS_APP_VER "1.0.5"
+#define CC_APP_VER "1.3.6"
+#define GS_APP_VER "1.0.6"
 #define GAME_API_VER 1
+
 #if defined CC_BUILD_OG
 #define GAME_APP_NAME  "ClassiCube 1.3.6"
 #define GAME_APP_TITLE "ClassiCube 1.3.6"
 #else
 #define CC_APP_NAME  "ClassiCube 1.3.6"
-#define GAME_APP_NAME "&eGolden&6Sparks &eCore &61.0.5"
-#define GAME_APP_TITLE "GoldenSparks Core 1.0.5"
+#define GAME_APP_NAME "&eGolden&6Sparks &eCore &61.0.6"
+#define GAME_APP_TITLE "GoldenSparks Core 1.0.6"
 #endif
 
 /* Max number of characters strings can have. */
@@ -55,7 +56,7 @@ enum FACE_CONSTS {
 	FACE_ZMAX = 3, /* Face Z = 1 */
 	FACE_YMIN = 4, /* Face Y = 0 */
 	FACE_YMAX = 5, /* Face Y = 1 */
-	FACE_COUNT = 6  /* Number of faces on a cube */
+	FACE_COUNT= 6  /* Number of faces on a cube */
 };
 
 enum SKIN_TYPE { SKIN_64x32, SKIN_64x64, SKIN_64x64_SLIM, SKIN_INVALID = 0xF0 };
@@ -74,6 +75,6 @@ enum SKIN_TYPE { SKIN_64x32, SKIN_64x64, SKIN_64x64_SLIM, SKIN_INVALID = 0xF0 };
 #define RESOURCE_SERVER "http://static.classicube.net"
 /* Webpage where users can register for a new account */
 #define REGISTERNEW_URL "https://www.classicube.net/acc/register/"
-
+#define CC_CLIENT_URL "https://www.classicube.net/download/"
 #define DEFAULT_USERNAME "Singleplayer"
 #endif

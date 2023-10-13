@@ -59,15 +59,22 @@ void Entity_GetTransform(struct Entity* e, Vec3 pos, Vec3 scale, struct Matrix* 
 	struct Matrix tmp;
 	Matrix_Scale(m, scale.X, scale.Y, scale.Z);
 
-	Matrix_RotateZ(&tmp, -e->RotZ * MATH_DEG2RAD);
-	Matrix_MulBy(m, &tmp);
-	Matrix_RotateX(&tmp, -e->RotX * MATH_DEG2RAD);
-	Matrix_MulBy(m, &tmp);
-	Matrix_RotateY(&tmp, -e->RotY * MATH_DEG2RAD);
-	Matrix_MulBy(m, &tmp);
+	if (e->RotZ) {
+		Matrix_RotateZ( &tmp, -e->RotZ * MATH_DEG2RAD);
+		Matrix_MulBy(m, &tmp);
+	}
+	if (e->RotX) {
+		Matrix_RotateX( &tmp, -e->RotX * MATH_DEG2RAD);
+		Matrix_MulBy(m, &tmp);
+	}
+	if (e->RotY) {
+		Matrix_RotateY( &tmp, -e->RotY * MATH_DEG2RAD);
+		Matrix_MulBy(m, &tmp);
+	}
+
 	Matrix_Translate(&tmp, pos.X, pos.Y, pos.Z);
-	Matrix_MulBy(m, &tmp);
-	/* return rotZ * rotX * rotY * scale * translate; */
+	Matrix_MulBy(m,  &tmp);
+	/* return scale * rotZ * rotX * rotY * translate; */
 }
 
 void Entity_GetPickingBounds(struct Entity* e, struct AABB* bb) {
@@ -600,7 +607,6 @@ static void Entities_ContextLost(void* obj) {
 		if (!Entities.List[i]) continue;
 		Entity_ContextLost(Entities.List[i]);
 	}
-	Gfx_DeleteTexture(&ShadowComponent_ShadowTex);
 
 	if (Gfx.ManagedTextures) return;
 	for (i = 0; i < ENTITIES_MAX_COUNT; i++) {
@@ -653,30 +659,6 @@ EntityID Entities_GetClosest(struct Entity* src) {
 		}
 	}
 	return targetId;
-}
-
-void Entities_DrawShadows(void) {
-	int i;
-	if (Entities.ShadowsMode == SHADOW_MODE_NONE) return;
-	ShadowComponent_BoundShadowTex = false;
-
-	Gfx_SetAlphaArgBlend(true);
-	Gfx_SetDepthWrite(false);
-	Gfx_SetAlphaBlending(true);
-
-	Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
-	ShadowComponent_Draw(Entities.List[ENTITIES_SELF_ID]);
-
-	if (Entities.ShadowsMode == SHADOW_MODE_CIRCLE_ALL) {	
-		for (i = 0; i < ENTITIES_SELF_ID; i++) {
-			if (!Entities.List[i] || !Entities.List[i]->ShouldRender) continue;
-			ShadowComponent_Draw(Entities.List[i]);
-		}
-	}
-
-	Gfx_SetAlphaArgBlend(false);
-	Gfx_SetDepthWrite(true);
-	Gfx_SetAlphaBlending(false);
 }
 
 
@@ -1214,7 +1196,6 @@ static void Entities_Free(void) {
 	{
 		Entities_Remove((EntityID)i);
 	}
-	Gfx_DeleteTexture(&ShadowComponent_ShadowTex);
 }
 
 struct IGameComponent Entities_Component = {

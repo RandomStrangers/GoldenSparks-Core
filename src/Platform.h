@@ -8,7 +8,7 @@ Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 struct DateTime;
 
 enum Socket_PollMode { SOCKET_POLL_READ, SOCKET_POLL_WRITE };
-#ifdef CC_BUILD_WIN
+#if defined CC_BUILD_WIN || defined CC_BUILD_XBOX
 typedef cc_uintptr cc_socket;
 typedef void* cc_file;
 #define _NL "\r\n"
@@ -75,6 +75,8 @@ CC_API void Process_Exit(cc_result code);
 /* Starts the platform-specific program to open the given url or filename. */
 /* For example, provide a http:// url to open a website in the user's web browser. */
 CC_API cc_result Process_StartOpen(const cc_string* args);
+/* Whether opening URLs is supported by the platform */
+extern cc_bool Process_OpenSupported;
 
 struct UpdaterBuild { 
 	const char* name; 

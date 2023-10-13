@@ -4,8 +4,7 @@
 #include "Errors.h"
 #include "Logger.h"
 #include "Window.h"
-#include "GL/gl.h"
-#include "GL/glkos.h"
+#include "../third_party/gldc/include/gldc.h"
 #include <malloc.h>
 #include <kos.h>
 #include <dc/matrix.h>
@@ -20,9 +19,10 @@ static cc_bool renderingDisabled;
 *---------------------------------------------------------General---------------------------------------------------------*
 *#########################################################################################################################*/
 void Gfx_Create(void) {
-	glKosInit();
-	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &Gfx.MaxTexWidth);
-	Gfx.MaxTexHeight = Gfx.MaxTexWidth;
+	if (!Gfx.Created) glKosInit();
+	// NOTE: technically 1024 is supported by hardware
+	Gfx.MaxTexWidth  = 512;
+	Gfx.MaxTexHeight = 512;
 	Gfx.Created      = true;
 	Gfx_RestoreState();
 }
@@ -142,8 +142,6 @@ void Gfx_EndFrame(void) {
 }
 
 void Gfx_OnWindowResize(void) {
-	/* TODO: Eliminate this nasty hack.. */
-	Game_UpdateDimensions();
 	glViewport(0, 0, Game.Width, Game.Height);
 }
 
@@ -245,9 +243,10 @@ static unsigned Interleave(unsigned x) {
 }
 
 /*static int CalcTwiddledIndex(int x, int y, int w, int h) {
-	// Twiddled index looks like this (starting from lowest numbered bits):
-	//   e.g. w > h: yx_yx_xx_xx
-	//   e.g. h > w: yx_yx_yy_yy
+	// Twiddled index looks like this (lowest numbered bits are leftmost):
+	//   - w = h: yxyx yxyx
+	//   - w > h: yxyx xxxx
+	//   - h > w: yxyx yyyy
 	// And can therefore be broken down into two components:
 	//  1) interleaved lower bits
 	//  2) masked and then shifted higher bits
@@ -255,7 +254,7 @@ static unsigned Interleave(unsigned x) {
 	int min_dimension    = Math.Min(w, h);
 	
 	int interleave_mask  = min_dimension - 1;
-	int interleaved_bits = Math_Log2(min_dimension);
+	int interleaved_bits = Math_ilog2(min_dimension);
 	
 	int shifted_mask = (~0) & ~interleave_mask;
 	// as lower interleaved bits contain both X and Y, need to adjust the
@@ -281,7 +280,7 @@ static unsigned Interleave(unsigned x) {
 #define Twiddle_CalcFactors(w, h) \
 	min_dimension    = min(w, h); \
 	interleave_mask  = min_dimension - 1; \
-	interleaved_bits = Math_Log2(min_dimension); \
+	interleaved_bits = Math_ilog2(min_dimension); \
 	shifted_mask     = 0xFFFFFFFFU & ~interleave_mask; \
 	shift_bits       = interleaved_bits;
 	
@@ -487,12 +486,10 @@ static CC_NOINLINE void UnshiftTextureCoords(int count) {
 static void Gfx_FreeState(void) { FreeDefaultResources(); }
 static void Gfx_RestoreState(void) {
 	InitDefaultResources();
-	glEnableClientState(GL_VERTEX_ARRAY);
-	glEnableClientState(GL_COLOR_ARRAY);
 	gfx_format = -1;
 
 	glAlphaFunc(GL_GREATER, 0.5f);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glBlendFunc(PVR_BLEND_SRCALPHA, PVR_BLEND_INVSRCALPHA);
 	glDepthFunc(GL_LEQUAL);
 }
 
@@ -522,10 +519,8 @@ void Gfx_SetVertexFormat(VertexFormat fmt) {
 	gfx_stride = strideSizes[fmt];
 
 	if (fmt == VERTEX_FORMAT_TEXTURED) {
-		glEnableClientState(GL_TEXTURE_COORD_ARRAY);
 		glEnable(GL_TEXTURE_2D);
 	} else {
-		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
 		glDisable(GL_TEXTURE_2D);
 	}
 }

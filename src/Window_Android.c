@@ -26,6 +26,7 @@ static void RefreshWindowBounds(void) {
 	Event_RaiseVoid(&WindowEvents.Resized);
 }
 
+// https://developer.android.com/ndk/reference/group/input
 static int MapNativeKey(int code) {
 	if (code >= AKEYCODE_0  && code <= AKEYCODE_9)   return (code - AKEYCODE_0)  + '0';
 	if (code >= AKEYCODE_A  && code <= AKEYCODE_Z)   return (code - AKEYCODE_A)  + 'A';
@@ -78,6 +79,26 @@ static int MapNativeKey(int code) {
 	case AKEYCODE_NUMPAD_ADD:      return CCKEY_KP_PLUS;
 	case AKEYCODE_NUMPAD_DOT:      return CCKEY_KP_DECIMAL;
 	case AKEYCODE_NUMPAD_ENTER:    return CCKEY_KP_ENTER;
+
+	case AKEYCODE_DPAD_UP:    return CCPAD_UP;
+	case AKEYCODE_DPAD_DOWN:  return CCPAD_DOWN;
+	case AKEYCODE_DPAD_LEFT:  return CCPAD_LEFT;
+	case AKEYCODE_DPAD_RIGHT: return CCPAD_RIGHT;
+
+	case AKEYCODE_BUTTON_A: return CCPAD_A;
+	case AKEYCODE_BUTTON_B: return CCPAD_B;
+	case AKEYCODE_BUTTON_X: return CCPAD_X;
+	case AKEYCODE_BUTTON_Y: return CCPAD_Y;
+
+	case AKEYCODE_BUTTON_L1: return CCPAD_L;
+	case AKEYCODE_BUTTON_R1: return CCPAD_R;
+	case AKEYCODE_BUTTON_L2: return CCPAD_ZL;
+	case AKEYCODE_BUTTON_R2: return CCPAD_ZR;
+
+	case AKEYCODE_BUTTON_START:  return CCPAD_START;
+	case AKEYCODE_BUTTON_SELECT: return CCPAD_SELECT;
+	case AKEYCODE_BUTTON_THUMBL: return CCPAD_LSTICK;
+	case AKEYCODE_BUTTON_THUMBR: return CCPAD_RSTICK;
 	}
 	return INPUT_NONE;
 }
@@ -86,6 +107,8 @@ static void JNICALL java_processKeyDown(JNIEnv* env, jobject o, jint code) {
 	int key = MapNativeKey(code);
 	Platform_Log2("KEY - DOWN %i,%i", &code, &key);
 	if (key) Input_SetPressed(key);
+
+	if (Input_IsPadButton(key)) Input.Sources |= INPUT_SOURCE_GAMEPAD;
 }
 
 static void JNICALL java_processKeyUp(JNIEnv* env, jobject o, jint code) {
@@ -259,6 +282,7 @@ void Window_Init(void) {
 
 	WindowInfo.SoftKeyboard = SOFT_KEYBOARD_RESIZE;
 	Input_SetTouchMode(true);
+	Input.Sources = INPUT_SOURCE_NORMAL;
 
 	DisplayInfo.Depth  = 32;
 	DisplayInfo.ScaleX = JavaICall_Float(env, JAVA_getDpiX, NULL);
@@ -278,7 +302,7 @@ static void RemakeWindowSurface(void) {
 	/* Loop until window gets created by main UI thread */
 	/* (i.e. until processSurfaceCreated is received) */
 	while (!winCreated) {
-		Window_ProcessEvents(0.0);
+		Window_ProcessEvents(0.01);
 		Thread_Sleep(10);
 	}
 
