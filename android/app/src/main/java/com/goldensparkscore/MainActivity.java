@@ -430,7 +430,7 @@ public class MainActivity extends Activity
 	
 	void hookMotionListener(View view) {
 		try {
-			GSCMotionListener listener = new CCMotionListener(this);
+			GSCMotionListener listener = new GSCMotionListener(this);
 			view.setOnGenericMotionListener(listener);
 		} catch (Exception ex) {
 			// Unsupported on android 12
@@ -751,7 +751,7 @@ public class MainActivity extends Activity
 		try {
 			Uri uri;
 			if (android.os.Build.VERSION.SDK_INT >= 23){ // android 6.0
-				uri = CCFileProvider.getUriForFile("screenshots/" + path);
+				uri = GSCFileProvider.getUriForFile("screenshots/" + path);
 			} else {
 				// when trying to use content:// URIs on my android 4.0.3 test device
 				//   - 1 app crashed
