@@ -547,9 +547,9 @@ void Launcher_DrawTitle(struct FontDesc* font, const char* text, struct Context2
 	x = ctx->width / 2 - Drawer2D_TextWidth(&args) / 2;
 
 	Drawer2D.Colors['f'] = BITMAPCOLOR_BLACK;
-	Context2D_DrawText(ctx, &args, x + Display_ScaleX(4), Display_ScaleY(4));
+	Context2D_DrawText(ctx, &args, x, 0);
 	Drawer2D.Colors['f'] = BITMAPCOLOR_WHITE;
-	//Context2D_DrawText(ctx, &args, x,                     0);
+	Context2D_DrawText(ctx, &args, x, 0);
 }
 void Launcher_MakeTitleFont(struct FontDesc* font) {
 	Drawer2D.BitmappedText = Launcher_BitmappedText();

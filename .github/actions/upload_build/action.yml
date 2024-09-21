@@ -1,11 +1,11 @@
 name: Upload binary
 description: Uploads a compiled binary
 inputs:
-  SOURCE_FILE: 
+  SOURCE_FILE:
     description: 'Path to file to upload'
     required: true
     type: string
-  DEST_NAME: Windows
+  DEST_NAME:
     description: 'Name to use for the uploaded artifact'
     required: true
     type: string

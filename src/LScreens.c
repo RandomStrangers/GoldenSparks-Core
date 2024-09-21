@@ -653,7 +653,7 @@ void MFAScreen_SetActive(void) {
 *#########################################################################################################################*/
 static struct MainScreen {
 	LScreen_Layout
-	struct LButton btnLogin, btnResume, btnDirect, btnSPlayer, btnRegister, btnOptions, btnUpdates, btnCCdownload;
+	struct LButton btnLogin, btnResume, btnDirect, btnSPlayer, btnRegister, btnOptions, btnUpdates, btnCCdownload, btnGSCdownload;
 	struct LInput iptUsername, iptPassword;
 	struct LLabel lblStatus, lblUpdate;
 	cc_bool signingIn;
@@ -674,6 +674,7 @@ LAYOUTS main_btnSPlayer[] = { { ANCHOR_CENTRE,  0 }, { ANCHOR_CENTRE, 110 } };
 
 LAYOUTS main_btnRegister[] = { { ANCHOR_MIN,    6 }, { ANCHOR_MAX,  6 } };
 LAYOUTS main_btnCCdownload[] = { { ANCHOR_MIN,  6 }, { ANCHOR_MAX,  40 } };
+LAYOUTS main_btnGSCdownload[] = { { ANCHOR_MIN,  6 }, { ANCHOR_MAX,  74 } };
 
 LAYOUTS main_btnOptions[]  = { { ANCHOR_CENTRE, 0 }, { ANCHOR_MAX,  6 } };
 LAYOUTS main_btnUpdates[]  = { { ANCHOR_MAX,    6 }, { ANCHOR_MAX,  6 } };
@@ -751,7 +752,11 @@ static void MainScreen_CC_Download(void* w) {
 	cc_result res = Process_StartOpen(&CCUrl);
 	if (res) Logger_SimpleWarn(res, "opening CC download page in browser");
 }
-
+static void MainScreen_GSC_Download(void* w) {
+	static const cc_string GSCUrl = String_FromConst(GSC_CLIENT_URL);
+	cc_result res = Process_StartOpen(&GSCUrl);
+	if (res) Logger_SimpleWarn(res, "opening GoldenSparks Core Client download page in browser");
+}
 static void MainScreen_Resume(void* w) {
 	struct ResumeInfo info;
 	MainScreen_GetResume(&info, true);
@@ -823,6 +828,7 @@ static void MainScreen_Init(struct LScreen* s_) {
 	if (Process_OpenSupported) {
 		LButton_Init(s, &s->btnRegister, 100, 35, "Register", main_btnRegister);
 		LButton_Init(s, &s->btnCCdownload, 100, 35, "CC Client", main_btnCCdownload);
+		LButton_Init(s, &s->btnGSCdownload, 100, 35, "GS Client", main_btnGSCdownload);
 	}
 
 	LButton_Init(s, &s->btnOptions, 100, 35, "Options", main_btnOptions);
@@ -836,6 +842,7 @@ static void MainScreen_Init(struct LScreen* s_) {
 	s->btnSPlayer.OnClick  = MainScreen_Singleplayer;
 	s->btnRegister.OnClick = MainScreen_Register;
 	s->btnCCdownload.OnClick = MainScreen_CC_Download;
+	s->btnGSCdownload.OnClick = MainScreen_GSC_Download;
 
 	s->btnOptions.OnClick  = SwitchToSettings;
 	s->btnUpdates.OnClick  = SwitchToUpdates;
@@ -1471,7 +1478,7 @@ static struct ThemesScreen {
 	struct LButton btnCustom, btnBack;
 } ThemesScreen;
 
-#define THEME_SCREEN_MAX_WIDGETS 99999999
+#define THEME_SCREEN_MAX_WIDGETS 5
 static struct LWidget* themes_widgets[THEME_SCREEN_MAX_WIDGETS];
 
 LAYOUTS the_btnModern[]  = { { ANCHOR_CENTRE, 0 }, { ANCHOR_CENTRE, -120 } };
@@ -1501,7 +1508,7 @@ static void ThemesScreen_Show(struct LScreen* s_) {
 	struct ThemesScreen* s = (struct ThemesScreen*)s_;
 	s->widgets    = themes_widgets;
 	s->maxWidgets = Array_Elems(themes_widgets);
-
+	s->numWidgets = 0;
 	LButton_Init(s, &s->btnModern,  200, 35, "Modern",  the_btnModern);
 	LButton_Init(s, &s->btnClassic, 200, 35, "Classic", the_btnClassic);
 	LButton_Init(s, &s->btnNordic,  200, 35, "Nordic",  the_btnNordic);
