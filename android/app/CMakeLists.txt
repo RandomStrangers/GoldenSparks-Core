@@ -21,8 +21,8 @@ set(${CMAKE_C_FLAGS}, "${CMAKE_C_FLAGS}")
 # now build app's shared lib
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11 -Wall -Werror")
 
-add_library(classicube SHARED
-        ../../src/Program.c
+add_library(goldensparkscore SHARED
+        ../../src/main.c
         ../../src/IsometricDrawer.c
         ../../src/Builder.c
         ../../src/ExtMath.c
@@ -47,7 +47,7 @@ add_library(classicube SHARED
         ../../src/Vorbis.c
         ../../src/Protocol.c
         ../../src/World.c
-        ../../src/PickedPosRenderer.c
+        ../../src/SelOutlineRenderer.c
         ../../src/Platform_Posix.c
         ../../src/Platform_Android.c
         ../../src/LScreens.c
@@ -98,12 +98,18 @@ add_library(classicube SHARED
         ../../src/Animations.c
         ../../src/LBackend.c
         ../../src/SystemFonts.c
+        ../../src/Commands.c
+        ../../src/EntityRenderers.c
+        ../../src/AudioBackend.c
+        ../../src/TouchUI.c
+        ../../src/LBackend_Android.c
         )
 
 # add lib dependencies
-target_link_libraries(classicube
+target_link_libraries(goldensparkscore
     android
     EGL
     GLESv2
     log
-    OpenSLES)
+    OpenSLES
+    jnigraphics)

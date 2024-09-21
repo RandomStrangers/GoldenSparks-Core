@@ -1,5 +1,10 @@
 name: Build latest (Android)
-on: [push]
+# trigger via either push to selected branches or on manual run
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.ref }}-android
@@ -63,7 +68,7 @@ jobs:
           #  https://github.com/skanti/Android-Manual-Build-Command-Line/blob/master/hello-jni/CMakeLists.txt
           
           # compile java files into multiple .class files
-          cd $ROOT_DIR/android/app/src/main/java/com/classicube
+          cd $ROOT_DIR/android/app/src/main/java/com/goldensparkscore
           javac *.java -d $ROOT_DIR/android/app/src/main/obj -classpath $SDK_ROOT/android.jar --release 8
           
           cd $ROOT_DIR/android/app/src/main
@@ -73,16 +78,16 @@ jobs:
           # compile the multiple .class files into one .dex file
           $TOOLS_ROOT/dx --dex --output=obj/classes.dex ./obj
           # create initial .apk with packaged version of resources
-          $TOOLS_ROOT/aapt package -f -M AndroidManifest.xml -S res -F obj/cc-unsigned.apk -I $SDK_ROOT/android.jar
+          $TOOLS_ROOT/aapt package -f -M AndroidManifest.xml -S res -F obj/gsc-unsigned.apk -I $SDK_ROOT/android.jar
           # and add all the required files
           cp obj/classes.dex classes.dex
-          $TOOLS_ROOT/aapt add -f obj/cc-unsigned.apk classes.dex lib/armeabi/libclassicube.so lib/armeabi-v7a/libclassicube.so lib/arm64-v8a/libclassicube.so lib/x86/libclassicube.so lib/x86_64/libclassicube.so
+          $TOOLS_ROOT/aapt add -f obj/gsc-unsigned.apk classes.dex lib/armeabi/libclassicube.so lib/armeabi-v7a/libclassicube.so lib/arm64-v8a/libclassicube.so lib/x86/libclassicube.so lib/x86_64/libclassicube.so
           # sign the apk with debug key (https://stackoverflow.com/questions/16711233/)
-          cp obj/cc-unsigned.apk obj/cc-signed.apk
-          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore debug.keystore -storepass android -keypass android obj/cc-signed.apk androiddebugkey
+          cp obj/gsc-unsigned.apk obj/gsc-signed.apk
+          jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore debug.keystore -storepass android -keypass android obj/gsc-signed.apk androiddebugkey
           # jarsigner -verbose
           # create aligned .apk file
-          $TOOLS_ROOT/zipalign -f 4 obj/cc-signed.apk $ROOT_DIR/src/cc.apk
+          $TOOLS_ROOT/zipalign -f 4 obj/gsc-signed.apk $ROOT_DIR/src/gsc.apk
 
 
       - uses: ./.github/actions/notify_failure
@@ -95,7 +100,7 @@ jobs:
       - uses: ./.github/actions/upload_build
         if: ${{ always() && steps.compile.outcome == 'success' }}
         with:
-          SOURCE_FILE: 'src/cc.apk'
+          SOURCE_FILE: 'src/gsc.apk'
           DEST_NAME: 'GoldenSparks-Core.apk'
 
       - uses: ./.github/actions/notify_success
