@@ -14,6 +14,7 @@ extern void* Window_XFB;
 static void* xfbs[2];
 static  int curFB;
 static GfxResourceID white_square;
+static GXTexRegionCallback regionCB;
 // https://wiibrew.org/wiki/Developer_tips
 // https://devkitpro.org/wiki/libogc/GX
 
@@ -27,9 +28,10 @@ static void InitGX(void) {
 	memset(fifo_buffer, 0, FIFO_SIZE);
 
 	GX_Init(fifo_buffer, FIFO_SIZE);
-	GX_SetViewport(0, 0, mode->fbWidth, mode->efbHeight, 0, 1);
+	Gfx_SetViewport(0, 0, mode->fbWidth, mode->efbHeight);
+	Gfx_SetScissor( 0, 0, mode->fbWidth, mode->efbHeight);
+	
 	GX_SetDispCopyYScale((f32)mode->xfbHeight / (f32)mode->efbHeight);
-	GX_SetScissor(0, 0, mode->fbWidth, mode->efbHeight);
 	GX_SetDispCopySrc(0, 0, mode->fbWidth, mode->efbHeight);
 	GX_SetDispCopyDst(mode->fbWidth, mode->xfbHeight);
 	GX_SetCopyFilter(mode->aa, mode->sample_pattern,
@@ -45,13 +47,20 @@ static void InitGX(void) {
 	
 	xfbs[0] = Window_XFB;
 	xfbs[1] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(mode));
+
+	regionCB = GX_SetTexRegionCallback(NULL);
+	GX_SetTexRegionCallback(regionCB);
 }
 
 void Gfx_Create(void) {
 	if (!Gfx.Created) InitGX();
 	
-	Gfx.MaxTexWidth  = 512;
-	Gfx.MaxTexHeight = 512;
+	Gfx.MaxTexWidth  = 1024;
+	Gfx.MaxTexHeight = 1024;
+	Gfx.MaxTexSize   = 512 * 512;
+	
+	Gfx.MinTexWidth  = 4;
+	Gfx.MinTexHeight = 4;
 	Gfx.Created      = true;
 	gfx_vsync        = true;
 	
@@ -136,20 +145,16 @@ static void ReorderPixels(CCTexture* tex, struct Bitmap* bmp,
 	}
 }
 
-GfxResourceID Gfx_CreateTexture(struct Bitmap* bmp, cc_uint8 flags, cc_bool mipmaps) {
-	if (bmp->width < 4 || bmp->height < 4) {
-		Platform_LogConst("ERROR: Tried to create texture smaller than 4x4");
-		return 0;
-	}
-	
+static GfxResourceID Gfx_AllocTexture(struct Bitmap* bmp, int rowWidth, cc_uint8 flags, cc_bool mipmaps) {
 	int size = bmp->width * bmp->height * 4;
 	CCTexture* tex = (CCTexture*)memalign(32, 32 + size);
+	if (!tex) return NULL;
 	
 	GX_InitTexObj(&tex->obj, tex->pixels, bmp->width, bmp->height,
 			GX_TF_RGBA8, GX_REPEAT, GX_REPEAT, GX_FALSE);
 	GX_InitTexObjFilterMode(&tex->obj, GX_NEAR, GX_NEAR);
 			
-	ReorderPixels(tex, bmp, 0, 0, bmp->width);
+	ReorderPixels(tex, bmp, 0, 0, rowWidth);
 	DCFlushRange(tex->pixels, size);
 	return tex;
 }
@@ -159,10 +164,6 @@ void Gfx_UpdateTexture(GfxResourceID texId, int x, int y, struct Bitmap* part, i
 	// TODO: wrong behaviour if x/y/part isn't multiple of 4 pixels
 	ReorderPixels(tex, part, x, y, rowWidth);
 	GX_InvalidateTexAll();
-}
-
-void Gfx_UpdateTexturePart(GfxResourceID texId, int x, int y, struct Bitmap* part, cc_bool mipmaps) {
-	Gfx_UpdateTexture(texId, x, y, part, part->width, mipmaps);
 }
 
 void Gfx_DeleteTexture(GfxResourceID* texId) {
@@ -178,7 +179,8 @@ void Gfx_BindTexture(GfxResourceID texId) {
 	CCTexture* tex = (CCTexture*)texId;
 	if (!tex) tex = white_square;
 
-	GX_LoadTexObj(&tex->obj, GX_TEXMAP0);
+	GXTexRegion* reg = regionCB(&tex->obj, GX_TEXMAP0);
+	GX_LoadTexObjPreloaded(&tex->obj, reg, GX_TEXMAP0);
 }
 
 
@@ -192,7 +194,7 @@ void Gfx_SetFaceCulling(cc_bool enabled) {
 	GX_SetCullMode(enabled ? GX_CULL_FRONT : GX_CULL_NONE);
 }
 
-void Gfx_SetAlphaBlending(cc_bool enabled) {
+static void SetAlphaBlend(cc_bool enabled) {
 	if (enabled) {
 		GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
 	} else {
@@ -203,7 +205,7 @@ void Gfx_SetAlphaBlending(cc_bool enabled) {
 void Gfx_SetAlphaArgBlend(cc_bool enabled) { 
 }
 
-void Gfx_ClearCol(PackedCol color) {
+void Gfx_ClearColor(PackedCol color) {
 	gfx_clearColor.r = PackedCol_R(color);
 	gfx_clearColor.g = PackedCol_G(color);
 	gfx_clearColor.b = PackedCol_B(color);
@@ -211,14 +213,13 @@ void Gfx_ClearCol(PackedCol color) {
 	GX_SetCopyClear(gfx_clearColor, 0x00ffffff); // TODO: use GX_MAX_Z24 
 }
 
-void Gfx_SetColWriteMask(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
+static void SetColorWrite(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
+	// TODO
 }
 
 static cc_bool depth_write = true, depth_test = true;
 static void UpdateDepthState(void) {
-	// match Desktop behaviour, where disabling depth testing also disables depth writing
-	// TODO do we actually need to & here?
-	GX_SetZMode(depth_test, GX_LEQUAL, depth_write & depth_test);
+	GX_SetZMode(depth_test, GX_LEQUAL, depth_write);
 }
 
 void Gfx_SetDepthWrite(cc_bool enabled) {
@@ -235,24 +236,69 @@ void Gfx_SetDepthTest(cc_bool enabled) {
 /*########################################################################################################################*
 *-----------------------------------------------------------Misc----------------------------------------------------------*
 *#########################################################################################################################*/
+static BitmapCol* GCWii_GetRow(struct Bitmap* bmp, int y, void* ctx) {
+	u8* buffer = (u8*)ctx;
+	u8 a, r, g, b;
+	int blockYStride = 4 * (bmp->width * 4); // tile row stride = 4 * row stride
+	int blockXStride = (4 * 4) * 4; // 16 pixels per tile
+
+	// Do the inverse of converting from 4x4 tiled to linear
+	for (u32 x = 0; x < bmp->width; x++){
+		int tileY = y >> 2, tileX = x >> 2;
+		int locY  = y & 0x3, locX = x & 0x3;
+		int idx   = (tileY * blockYStride) + (tileX * blockXStride) + ((locY << 2) + locX) * 2; 
+
+		// All 16 pixels are stored with AR first, then GB
+		//a = buffer[idx     ];
+		r = buffer[idx +  1];
+		g = buffer[idx + 32]; 
+		b = buffer[idx + 33];
+
+		bmp->scan0[x] = BitmapColor_RGB(r, g, b);
+	}
+	return bmp->scan0;
+}
+
 cc_result Gfx_TakeScreenshot(struct Stream* output) {
-	return ERR_NOT_SUPPORTED;
+	BitmapCol tmp[1024];
+	GXRModeObj* vmode = VIDEO_GetPreferredMode(NULL);
+	int width  = vmode->fbWidth;
+	int height = vmode->efbHeight;
+
+	u8* buffer = memalign(32, width * height * 4);
+	if (!buffer) return ERR_OUT_OF_MEMORY;
+
+	GX_SetTexCopySrc(0, 0, width, height);
+	GX_SetTexCopyDst(width, height, GX_TF_RGBA8, GX_FALSE);
+	GX_CopyTex(buffer, GX_FALSE);
+	GX_PixModeSync();
+	GX_Flush();
+	DCFlushRange(buffer, width * height * 4);
+
+	struct Bitmap bmp;
+	bmp.scan0  = tmp;
+	bmp.width  = width; 
+	bmp.height = height;
+
+	cc_result res = Png_Encode(&bmp, output, GCWii_GetRow, false, buffer);
+	free(buffer);
+	return res;
 }
 
 void Gfx_GetApiInfo(cc_string* info) {
-	String_Format1(info, "-- Using GC/WII --", NULL);
-	String_Format2(info, "Max texture size: (%i, %i)\n", &Gfx.MaxTexWidth, &Gfx.MaxTexHeight);
+	String_AppendConst(info, "-- Using GC/Wii --\n");
+	PrintMaxTextureInfo(info);
 }
 
-void Gfx_SetFpsLimit(cc_bool vsync, float minFrameMs) {
-	gfx_minFrameMs = minFrameMs;
-	gfx_vsync      = vsync;
+void Gfx_SetVSync(cc_bool vsync) {
+	gfx_vsync = vsync;
 }
 
 void Gfx_BeginFrame(void) {
 }
 
-void Gfx_Clear(void) {
+void Gfx_ClearBuffers(GfxBuffers buffers) {
+	// TODO clear only some buffers
 }
 
 void Gfx_EndFrame(void) {
@@ -264,12 +310,20 @@ void Gfx_EndFrame(void) {
 	VIDEO_Flush();
 	
 	if (gfx_vsync) VIDEO_WaitVSync();
-	if (gfx_minFrameMs) LimitFPS();
 }
 
 void Gfx_OnWindowResize(void) { }
 
+void Gfx_SetViewport(int x, int y, int w, int h) {
+	GX_SetViewport(x, y, w, h, 0, 1);
+}
+
+void Gfx_SetScissor(int x, int y, int w, int h) {
+	GX_SetScissor(x, y, w, h);
+}
+
 cc_bool Gfx_WarnIfNecessary(void) { return false; }
+cc_bool Gfx_GetUIOptions(struct MenuOptionsScreen* s) { return false; }
 
 
 /*########################################################################################################################*
@@ -280,7 +334,7 @@ cc_bool Gfx_WarnIfNecessary(void) { return false; }
 GfxResourceID Gfx_CreateIb2(int count, Gfx_FillIBFunc fillFunc, void* obj) {
 	//fillFunc(gfx_indices, count, obj);
 	// not used since render using GX_QUADS anyways
-	return 1;
+	return (void*)1;
 }
 
 void Gfx_BindIb(GfxResourceID ib) { }
@@ -293,10 +347,8 @@ void Gfx_DeleteIb(GfxResourceID* ib) { }
 static cc_uint8* gfx_vertices;
 static int vb_size;
 
-GfxResourceID Gfx_CreateVb(VertexFormat fmt, int count) {
-	void* data = memalign(16, count * strideSizes[fmt]);
-	if (!data) Logger_Abort("Failed to allocate memory for GFX VB");
-	return data;
+static GfxResourceID Gfx_AllocStaticVb(VertexFormat fmt, int count) {
+	return memalign(16, count * strideSizes[fmt]);
 }
 
 void Gfx_BindVb(GfxResourceID vb) { gfx_vertices = vb; }
@@ -318,11 +370,11 @@ void Gfx_UnlockVb(GfxResourceID vb) {
 }
 
 
-GfxResourceID Gfx_CreateDynamicVb(VertexFormat fmt, int maxVertices) {
-	void* data = memalign(16, maxVertices * strideSizes[fmt]);
-	if (!data) Logger_Abort("Failed to allocate memory for GFX VB");
-	return data;
+static GfxResourceID Gfx_AllocDynamicVb(VertexFormat fmt, int maxVertices) {
+	return memalign(16, maxVertices * strideSizes[fmt]);
 }
+
+void Gfx_BindDynamicVb(GfxResourceID vb) { Gfx_BindVb(vb); }
 
 void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 	vb_size = count * strideSizes[fmt];
@@ -334,13 +386,7 @@ void Gfx_UnlockDynamicVb(GfxResourceID vb) {
 	DCFlushRange(vb, vb_size);
 }
 
-// Current size of vertices
-static int gfx_stride; // TODO move down to Drawing area ??
-void Gfx_SetDynamicVbData(GfxResourceID vb, void* vertices, int vCount) {
-	gfx_vertices = vb;
-	Mem_Copy(vb, vertices, vCount * gfx_stride);
-	DCFlushRange(vertices, vCount * gfx_stride);
-}
+void Gfx_DeleteDynamicVb(GfxResourceID* vb) { Gfx_DeleteVb(vb); }
 
 
 /*########################################################################################################################*
@@ -350,27 +396,66 @@ static PackedCol gfx_fogColor;
 static float gfx_fogEnd = -1.0f, gfx_fogDensity = -1.0f;
 static int gfx_fogMode  = -1;
 
+static void UpdateFog(void) {
+	float beg = 0.0f, end = 0.0f;
+	float near = 0.1f, far = Game_ViewDistance;
+	int mode = GX_FOG_NONE;
+
+	GXColor color;
+	color.r = PackedCol_R(gfx_fogColor);
+	color.g = PackedCol_G(gfx_fogColor);
+	color.b = PackedCol_B(gfx_fogColor);
+	color.a = PackedCol_A(gfx_fogColor);
+
+	// Fog end values based off https://github.com/devkitPro/opengx/blob/master/src/gc_gl.c#L1770
+	if (!gfx_fogEnabled) {
+		near = 0.0f;
+		far  = 0.0f;
+	} else if (gfx_fogMode == FOG_LINEAR) {
+		mode = GX_FOG_LIN;
+		end  = gfx_fogEnd;
+	} else if (gfx_fogMode == FOG_EXP) {
+		mode = GX_FOG_EXP;
+		beg  = near;
+		end  = 5.0f / gfx_fogDensity;
+	} else if (gfx_fogMode == FOG_EXP2) {
+		mode = GX_FOG_EXP2;
+		beg  = near;
+		end  = 2.0f / gfx_fogDensity;
+	}
+    GX_SetFog(mode, beg, end, near, far, color);
+}
+
 void Gfx_SetFog(cc_bool enabled) {
 	gfx_fogEnabled = enabled;
+	UpdateFog();
 }
 
 void Gfx_SetFogCol(PackedCol color) {
 	if (color == gfx_fogColor) return;
 	gfx_fogColor = color;
+	UpdateFog();
 }
 
 void Gfx_SetFogDensity(float value) {
+	if (value == gfx_fogDensity) return;
+	gfx_fogDensity = value;
+	UpdateFog();
 }
 
 void Gfx_SetFogEnd(float value) {
 	if (value == gfx_fogEnd) return;
 	gfx_fogEnd = value;
+	UpdateFog();
 }
 
 void Gfx_SetFogMode(FogFunc func) {
+	if (func == gfx_fogMode) return;
+	gfx_fogMode = func;
+	UpdateFog();
 }
 
-void Gfx_SetAlphaTest(cc_bool enabled) {
+static void SetAlphaTest(cc_bool enabled) {
 	if (enabled) {
 		GX_SetAlphaCompare(GX_GREATER, 127, GX_AOP_AND, GX_ALWAYS, 0);
 	} else {
@@ -398,28 +483,28 @@ void Gfx_CalcOrthoMatrix(struct Matrix* matrix, float width, float height, float
 	//   The simplified calculation below uses: L = 0, R = width, T = 0, B = height
 	*matrix = Matrix_Identity;
 	
-	matrix->row1.X =  2.0f / width;
-	matrix->row2.Y = -2.0f / height;
-	matrix->row3.Z = -1.0f / (zFar - zNear);
+	matrix->row1.x =  2.0f / width;
+	matrix->row2.y = -2.0f / height;
+	matrix->row3.z = -1.0f / (zFar - zNear);
 
-	matrix->row4.X = -1.0f;
-	matrix->row4.Y =  1.0f;
-	matrix->row4.Z = -zFar / (zFar - zNear);
+	matrix->row4.x = -1.0f;
+	matrix->row4.y =  1.0f;
+	matrix->row4.z = -zFar / (zFar - zNear);
 }
 
-static double Cotangent(double x) { return Math_Cos(x) / Math_Sin(x); }
+static float Cotangent(float x) { return Math_CosF(x) / Math_SinF(x); }
 void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, float zFar) {
 	float zNear = 0.1f;
-	float c = (float)Cotangent(0.5f * fov);
+	float c = Cotangent(0.5f * fov);
 	
 	// Transposed, source guPersepctive https://github.com/devkitPro/libogc/blob/master/libogc/gu.c
 	*matrix = Matrix_Identity;
-	matrix->row1.X = c / aspect;
-	matrix->row2.Y = c;
-	matrix->row3.Z = -(zNear)        / (zFar - zNear);
-	matrix->row3.W = -1.0f;
-	matrix->row4.Z = -(zFar * zNear) / (zFar - zNear);
-	matrix->row4.W =  0.0f;
+	matrix->row1.x = c / aspect;
+	matrix->row2.y = c;
+	matrix->row3.z = -(zNear)        / (zFar - zNear);
+	matrix->row3.w = -1.0f;
+	matrix->row4.z = -(zFar * zNear) / (zFar - zNear);
+	matrix->row4.w =  0.0f;
 }
 
 void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
@@ -435,7 +520,7 @@ void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
 		tmp[i * 4 + 3] = m[12 + i];
 	}
 		
-	if (type == MATRIX_PROJECTION) {
+	if (type == MATRIX_PROJ) {
 		GX_LoadProjectionMtx(tmp,
 			tmp[3*4+3] == 0.0f ? GX_PERSPECTIVE : GX_ORTHOGRAPHIC);
 	} else {
@@ -443,9 +528,12 @@ void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
 	}
 }
 
-void Gfx_LoadIdentityMatrix(MatrixType type) {
-	Gfx_LoadMatrix(type, &Matrix_Identity);
+void Gfx_LoadMVP(const struct Matrix* view, const struct Matrix* proj, struct Matrix* mvp) {
+	Gfx_LoadMatrix(MATRIX_VIEW, view);
+	Gfx_LoadMatrix(MATRIX_PROJ, proj);
+	Matrix_Mul(mvp, view, proj);
 }
+
 static float texOffsetX, texOffsetY;
 static void UpdateTexCoordGen(void) {
 	if (texOffsetX || texOffsetY) {
@@ -476,9 +564,6 @@ void Gfx_DisableTextureOffset(void) {
 /*########################################################################################################################*
 *---------------------------------------------------------Drawing---------------------------------------------------------*
 *#########################################################################################################################*/
-// Current format and size of vertices
-static int gfx_format = -1;
-
 void Gfx_SetVertexFormat(VertexFormat fmt) {
 	if (fmt == gfx_format) return;
 	gfx_format = fmt;
@@ -523,8 +608,8 @@ static void Draw_ColouredTriangles(int verticesCount, int startVertex) {
 	{
 		struct VertexColoured* v = (struct VertexColoured*)gfx_vertices + startVertex + i;
 		
-		GX_Position3f32(v->X, v->Y, v->Z);
-		GX_Color4u8(PackedCol_R(v->Col), PackedCol_G(v->Col), PackedCol_B(v->Col), PackedCol_A(v->Col));
+		GX_Position3f32(v->x, v->y, v->z);
+		GX_Color1u32(v->Col);
 	}
 	GX_End();
 }
@@ -535,8 +620,8 @@ static void Draw_TexturedTriangles(int verticesCount, int startVertex) {
 	{
 		struct VertexTextured* v = (struct VertexTextured*)gfx_vertices + startVertex + i;
 		
-		GX_Position3f32(v->X, v->Y, v->Z);
-		GX_Color4u8(PackedCol_R(v->Col), PackedCol_G(v->Col), PackedCol_B(v->Col), PackedCol_A(v->Col));
+		GX_Position3f32(v->x, v->y, v->z);
+		GX_Color1u32(v->Col);
 		GX_TexCoord2f32(v->U, v->V);
 	}
 	GX_End();

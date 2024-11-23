@@ -257,7 +257,7 @@ static void Physics_HandleSapling(int index, BlockID block) {
 		count = TreeGen_Grow(x, y, z, height, coords, blocks);
 
 		for (i = 0; i < count; i++) {
-			Game_UpdateBlock(coords[i].X, coords[i].Y, coords[i].Z, blocks[i]);
+			Game_UpdateBlock(coords[i].x, coords[i].y, coords[i].z, blocks[i]);
 		}
 	} else {
 		Game_UpdateBlock(x, y, z, BLOCK_SAPLING);
@@ -527,7 +527,6 @@ void Physics_Init(void) {
 	Physics.OnRandomTick[BLOCK_SAND]   = Physics_DoFalling;
 	Physics.OnRandomTick[BLOCK_GRAVEL] = Physics_DoFalling;
 
-	Physics.OnPlace[BLOCK_SAPLING]      = Physics_HandleSapling;
 	Physics.OnRandomTick[BLOCK_SAPLING] = Physics_HandleSapling;
 	Physics.OnRandomTick[BLOCK_DIRT]    = Physics_HandleDirt;
 	Physics.OnRandomTick[BLOCK_GRASS]   = Physics_HandleGrass;
@@ -553,6 +552,7 @@ void Physics_Init(void) {
 	Physics.OnRandomTick[BLOCK_STILL_LAVA]  = Physics_ActivateLava;
 
 	Physics.OnPlace[BLOCK_SLAB]        = Physics_HandleSlab;
+	if (Game_ClassicMode) return;
 	Physics.OnPlace[BLOCK_COBBLE_SLAB] = Physics_HandleCobblestoneSlab;
 	Physics.OnPlace[BLOCK_TNT]         = Physics_HandleTnt;
 }

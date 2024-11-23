@@ -34,10 +34,13 @@
 
 const cc_result ReturnCode_FileShareViolation = 1000000000; /* TODO: not used apparently */
 const cc_result ReturnCode_FileNotFound     = ENOENT;
+const cc_result ReturnCode_DirectoryExists  = EEXIST;
 const cc_result ReturnCode_SocketInProgess  = EINPROGRESS;
 const cc_result ReturnCode_SocketWouldBlock = EWOULDBLOCK;
-const cc_result ReturnCode_DirectoryExists  = EEXIST;
+const cc_result ReturnCode_SocketDropped    = EPIPE;
+
 const char* Platform_AppNameSuffix = " 3DS";
+cc_bool Platform_ReadonlyFilesystem;
 
 // https://gbatemp.net/threads/homebrew-development.360646/page-245
 // 3DS defaults to stack size of *32 KB*.. way too small
@@ -48,21 +51,14 @@ unsigned int __stacksize__ = 256 * 1024;
 *------------------------------------------------------Logging/Time-------------------------------------------------------*
 *#########################################################################################################################*/
 void Platform_Log(const char* msg, int len) {
-	//cc_file fd = -1;
-	// CITRA LOGGING
-	//cc_string path = String_Init(msg, len, len);
-	//File_Open(&fd, &path);
-	//if (fd > 0) File_Close(fd);
-	
-	write(STDOUT_FILENO, msg,  len);
-	write(STDOUT_FILENO, "\n",   1);
+	// output to debug service (visible in Citra with log level set to "Debug.Emulated:Debug", or on console via remote gdb)
+	svcOutputDebugString(msg, len);
 }
 
-#define UnixTime_TotalMS(time) ((cc_uint64)time.tv_sec * 1000 + UNIX_EPOCH + (time.tv_usec / 1000))
-TimeMS DateTime_CurrentUTC_MS(void) {
+TimeMS DateTime_CurrentUTC(void) {
 	struct timeval cur;
 	gettimeofday(&cur, NULL);
-	return UnixTime_TotalMS(cur);
+	return (cc_uint64)cur.tv_sec + UNIX_EPOCH_SECONDS;
 }
 
 void DateTime_CurrentLocal(struct DateTime* t) {
@@ -98,36 +94,31 @@ cc_uint64 Stopwatch_ElapsedMicroseconds(cc_uint64 beg, cc_uint64 end) {
 *#########################################################################################################################*/
 static const cc_string root_path = String_FromConst("sdmc:/3ds/ClassiCube/");
 
-static void GetNativePath(char* str, const cc_string* path) {
+void Platform_EncodePath(cc_filepath* dst, const cc_string* path) {
+	char* str = dst->buffer;
 	Mem_Copy(str, root_path.buffer, root_path.length);
 	str += root_path.length;
 	String_EncodeUtf8(str, path);
 }
 
-cc_result Directory_Create(const cc_string* path) {
-	char str[NATIVE_STR_LEN];
-	GetNativePath(str, path);
-	
-	return mkdir(str, 0666) == -1 ? errno : 0; // FS has no permissions anyways
+cc_result Directory_Create(const cc_filepath* path) {
+	return mkdir(path->buffer, 0666) == -1 ? errno : 0; // FS has no permissions anyways
 }
 
-int File_Exists(const cc_string* path) {
-	char str[NATIVE_STR_LEN];
+int File_Exists(const cc_filepath* path) {
 	struct stat sb;
-	GetNativePath(str, path);
-	
-	return stat(str, &sb) == 0 && S_ISREG(sb.st_mode);
+	return stat(path->buffer, &sb) == 0 && S_ISREG(sb.st_mode);
 }
 
 cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCallback callback) {
 	cc_string path; char pathBuffer[FILENAME_SIZE];
-	char str[NATIVE_STR_LEN];
+	cc_filepath str;
 	struct dirent* entry;
 	char* src;
 	int len, res, is_dir;
 
-	GetNativePath(str, dirPath);
-	DIR* dirPtr = opendir(str);
+	Platform_EncodePath(&str, dirPath);
+	DIR* dirPtr = opendir(str.buffer);
 	if (!dirPtr) return errno;
 
 	/* POSIX docs: "When the end of the directory is encountered, a null pointer is returned and errno is not changed." */
@@ -145,12 +136,7 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 		is_dir = entry->d_type == DT_DIR;
 		/* TODO: fallback to stat when this fails */
 
-		if (is_dir) {
-			res = Directory_Enum(&path, obj, callback);
-			if (res) { closedir(dirPtr); return res; }
-		} else {
-			callback(&path, obj);
-		}
+		callback(&path, obj, is_dir);
 		errno = 0;
 	}
 
@@ -159,22 +145,19 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 	return res;
 }
 
-static cc_result File_Do(cc_file* file, const cc_string* path, int mode) {
-	char str[NATIVE_STR_LEN];
-	GetNativePath(str, path);
-
-	*file = open(str, mode, 0666); // FS has no permissions anyways
+static cc_result File_Do(cc_file* file, const char* path, int mode) {
+	*file = open(path, mode, 0666); // FS has no permissions anyways
 	return *file == -1 ? errno : 0;
 }
 
-cc_result File_Open(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDONLY);
+cc_result File_Open(cc_file* file, const cc_filepath* path) {
+	return File_Do(file, path->buffer, O_RDONLY);
 }
-cc_result File_Create(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDWR | O_CREAT | O_TRUNC);
+cc_result File_Create(cc_file* file, const cc_filepath* path) {
+	return File_Do(file, path->buffer, O_RDWR | O_CREAT | O_TRUNC);
 }
-cc_result File_OpenOrCreate(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDWR | O_CREAT);
+cc_result File_OpenOrCreate(cc_file* file, const cc_filepath* path) {
+	return File_Do(file, path->buffer, O_RDWR | O_CREAT);
 }
 
 cc_result File_Read(cc_file file, void* data, cc_uint32 count, cc_uint32* bytesRead) {
@@ -219,13 +202,9 @@ static void Exec3DSThread(void* param) {
 	((Thread_StartFunc)param)(); 
 }
 
-void* Thread_Create(Thread_StartFunc func) {
+void Thread_Run(void** handle, Thread_StartFunc func, int stackSize, const char* name) {
 	//TODO: Not quite correct, but eh
-	return threadCreate(Exec3DSThread, (void*)func, 256 * 1024, 0x3f, -2, false);
-}
-
-void Thread_Start2(void* handle, Thread_StartFunc func) {
-	
+	*handle = threadCreate(Exec3DSThread, (void*)func, stackSize, 0x3f, -2, false);
 }
 
 void Thread_Detach(void* handle) {
@@ -239,7 +218,7 @@ void Thread_Join(void* handle) {
 	threadFree(thread);
 }
 
-void* Mutex_Create(void) {
+void* Mutex_Create(const char* name) {
 	LightLock* lock = (LightLock*)Mem_Alloc(1, sizeof(LightLock), "mutex");
 	LightLock_Init(lock);
 	return lock;
@@ -257,7 +236,7 @@ void Mutex_Unlock(void* handle) {
 	LightLock_Unlock((LightLock*)handle);
 }
 
-void* Waitable_Create(void) {
+void* Waitable_Create(const char* name) {
 	LightEvent* event = (LightEvent*)Mem_Alloc(1, sizeof(LightEvent), "waitable");
 	LightEvent_Init(event, RESET_ONESHOT);
 	return event;
@@ -277,77 +256,76 @@ void Waitable_Wait(void* handle) {
 
 void Waitable_WaitFor(void* handle, cc_uint32 milliseconds) {
 	s64 timeout_ns = milliseconds * (1000 * 1000); // milliseconds to nanoseconds
-	int res = LightEvent_WaitTimeout((LightEvent*)handle, timeout_ns);
-	if (res) Logger_Abort2(res, "Waiting timed event");
+	LightEvent_WaitTimeout((LightEvent*)handle, timeout_ns);
 }
 
 
 /*########################################################################################################################*
 *---------------------------------------------------------Socket----------------------------------------------------------*
 *#########################################################################################################################*/
-union SocketAddress {
-	struct sockaddr raw;
-	struct sockaddr_in v4;
-};
-
-static int ParseHost(union SocketAddress* addr, const char* host) {
+cc_result Socket_ParseAddress(const cc_string* address, int port, cc_sockaddr* addrs, int* numValidAddrs) {
+	char str[NATIVE_STR_LEN];
+	char portRaw[32]; cc_string portStr;
 	struct addrinfo hints = { 0 };
 	struct addrinfo* result;
 	struct addrinfo* cur;
-	int found = false;
+	int i = 0;
+	
+	String_EncodeUtf8(str, address);
+	*numValidAddrs = 0;
+	struct sockaddr_in* addr4 = (struct sockaddr_in*)addrs[0].data;
+	if (inet_aton(str, &addr4->sin_addr) > 0) {
+		// TODO eliminate this path?
+		addr4->sin_family = AF_INET;
+		addr4->sin_port   = htons(port);
+		
+		addrs[0].size  = sizeof(*addr4);
+		*numValidAddrs = 1;
+		return 0;
+	}
 
-	hints.ai_family   = AF_INET;
+	hints.ai_family   = AF_INET; // TODO: you need this, otherwise resolving dl.dropboxusercontent.com crashes in Citra. probably something to do with IPv6 addresses
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
+	
+	String_InitArray(portStr,  portRaw);
+	String_AppendInt(&portStr, port);
+	portRaw[portStr.length] = '\0';
 
-	int res = getaddrinfo(host, NULL, &hints, &result);
+	int res = getaddrinfo(str, portRaw, &hints, &result);
 	if (res == -NO_DATA) return SOCK_ERR_UNKNOWN_HOST;
 	if (res) return res;
 
-	for (cur = result; cur; cur = cur->ai_next) {
-		if (cur->ai_family != AF_INET) continue;
-		found = true;
-
-		Mem_Copy(addr, cur->ai_addr, cur->ai_addrlen);
-		break;
+	for (cur = result; cur && i < SOCKET_MAX_ADDRS; cur = cur->ai_next, i++) 
+	{
+		if (!cur->ai_addrlen) break; 
+		// TODO citra returns empty addresses past first one? does that happen on real hardware too?
+		
+		SocketAddr_Set(&addrs[i], cur->ai_addr, cur->ai_addrlen);
 	}
 
 	freeaddrinfo(result);
-	return found ? 0 : ERR_INVALID_ARGUMENT;
+	*numValidAddrs = i;
+	return i == 0 ? ERR_INVALID_ARGUMENT : 0;
 }
 
-static int ParseAddress(union SocketAddress* addr, const cc_string* address) {
-	char str[NATIVE_STR_LEN];
-	String_EncodeUtf8(str, address);
+cc_result Socket_Create(cc_socket* s, cc_sockaddr* addr, cc_bool nonblocking) {
+	struct sockaddr* raw = (struct sockaddr*)addr->data;
 
-	if (inet_pton(AF_INET, str, &addr->v4.sin_addr) > 0) return 0;
-	return ParseHost(addr, str);
-}
-
-int Socket_ValidAddress(const cc_string* address) {
-	union SocketAddress addr;
-	return ParseAddress(&addr, address) == 0;
-}
-
-cc_result Socket_Connect(cc_socket* s, const cc_string* address, int port, cc_bool nonblocking) {
-	union SocketAddress addr;
-	int res;
-
-	*s = -1;
-	if ((res = ParseAddress(&addr, address))) return res;
-
-	*s = socket(AF_INET, SOCK_STREAM, 0); // https://www.3dbrew.org/wiki/SOCU:socket
+	*s = socket(raw->sa_family, SOCK_STREAM, 0); // https://www.3dbrew.org/wiki/SOCU:socket
 	if (*s == -1) return errno;
-	
+
 	if (nonblocking) {
 		int flags = fcntl(*s, F_GETFL, 0);
 		if (flags >= 0) fcntl(*s, F_SETFL, flags | O_NONBLOCK);
 	}
+	return 0;
+}
 
-	addr.v4.sin_family = AF_INET;
-	addr.v4.sin_port   = htons(port);
-
-	res = connect(*s, &addr.raw, sizeof(addr.v4));
+cc_result Socket_Connect(cc_socket s, cc_sockaddr* addr) {
+	struct sockaddr* raw = (struct sockaddr*)addr->data;
+	
+	int res = connect(s, raw, addr->size);
 	return res == -1 ? errno : 0;
 }
 
@@ -456,13 +434,19 @@ cc_bool Platform_DescribeError(cc_result res, cc_string* dst) {
 	return true;
 }
 
+cc_bool Process_OpenSupported = false;
+cc_result Process_StartOpen(const cc_string* args) {
+	return ERR_NOT_SUPPORTED;
+}
+
 
 /*########################################################################################################################*
 *-------------------------------------------------------Encryption--------------------------------------------------------*
 *#########################################################################################################################*/
+#define MACHINE_KEY "3DS_3DS_3DS_3DS_"
+
 static cc_result GetMachineID(cc_uint32* key) {
-	// doesn't really matter if called multiple times
-	psInit();
-	return PS_GetDeviceId(key);
+	Mem_Copy(key, MACHINE_KEY, sizeof(MACHINE_KEY) - 1);
+	return 0;
 }
 #endif

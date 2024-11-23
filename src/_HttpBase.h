@@ -25,7 +25,12 @@ void HttpRequest_Free(struct HttpRequest* request) {
 /*########################################################################################################################*
 *----------------------------------------------------Http requests list---------------------------------------------------*
 *#########################################################################################################################*/
-#define HTTP_DEF_ELEMS 10
+#ifdef CC_BUILD_NETWORKING
+	#define HTTP_DEF_ELEMS 10
+#else
+	#define HTTP_DEF_ELEMS 1 /* TODO better unused code removal */
+#endif
+
 struct RequestList {
 	int count, capacity;
 	struct HttpRequest* entries;
@@ -184,7 +189,7 @@ static void Http_FinishRequest(struct HttpRequest* req) {
 	req->success = !req->result && req->statusCode == 200 && req->data && req->size;
 
 	if (!req->success) {
-		const char* error = req->error; req->error = NULL;
+		char* error = req->error; req->error = NULL;
 		HttpRequest_Free(req);
 		req->error = error;
 		/* TODO don't HttpRequest_Free here? */
@@ -192,7 +197,7 @@ static void Http_FinishRequest(struct HttpRequest* req) {
 
 	Mutex_Lock(processedMutex);
 	{
-		req->timeDownloaded = DateTime_CurrentUTC_MS();
+		req->timeDownloaded = Stopwatch_Measure();
 		RequestList_Append(&processedReqs, req, false);
 	}
 	Mutex_Unlock(processedMutex);
@@ -205,11 +210,13 @@ static void Http_CleanCacheTask(struct ScheduledTask* task) {
 
 	Mutex_Lock(processedMutex);
 	{
-		TimeMS now = DateTime_CurrentUTC_MS();
-		for (i = processedReqs.count - 1; i >= 0; i--) {
+		cc_uint64 now = Stopwatch_Measure();
+		for (i = processedReqs.count - 1; i >= 0; i--) 
+		{
 			item = &processedReqs.entries[i];
-			if (item->timeDownloaded + (10 * 1000) >= now) continue;
+			if (Stopwatch_ElapsedMS(item->timeDownloaded, now) < 10 * 1000) continue;
 
+			Platform_Log1("Cleaning up forgotten download for %c", item->url);
 			HttpRequest_Free(item);
 			RequestList_RemoveAt(&processedReqs, i);
 		}
@@ -294,7 +301,11 @@ void Http_LogError(const char* action, const struct HttpRequest* item) {
 *-----------------------------------------------------Http component------------------------------------------------------*
 *#########################################################################################################################*/
 static void Http_InitCommon(void) {
+#if defined CC_BUILD_NDS
+	httpOnly    = Options_GetBool(OPT_HTTP_ONLY, true);
+#else
 	httpOnly    = Options_GetBool(OPT_HTTP_ONLY, false);
+#endif
 	httpsVerify = Options_GetBool(OPT_HTTPS_VERIFY, true);
 
 	Options_Get(OPT_SKIN_SERVER, &skinServer, SKINS_SERVER);

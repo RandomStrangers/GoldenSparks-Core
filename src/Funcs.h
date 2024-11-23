@@ -1,6 +1,8 @@
 #ifndef CC_FUNCS_H
 #define CC_FUNCS_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* 
 Simple function implementations
   NOTE: doing min(x++, y) etc will increment x twice!
@@ -39,4 +41,16 @@ if (!head) { head = item; } else { tail->next = item; }\
 tail       = item;\
 item->next = NULL;
 
+#define LinkedList_Remove(item, cur, head, tail)\
+cur = head; \
+if (head == item) head = item->next;\
+\
+while (cur) {\
+	if (cur->next == item) cur->next = item->next; \
+	\
+	tail = cur;\
+	cur  = cur->next;\
+}
+
+CC_END_HEADER
 #endif

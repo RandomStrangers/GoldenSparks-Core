@@ -7,9 +7,6 @@
 #include <malloc.h>
 #include <rsx/rsx.h>
 #include <sysutil/video.h>
-
-/* Current format and size of vertices */
-static int gfx_stride, gfx_format = -1;
 static cc_bool renderingDisabled;
 
 static gcmContextData* context;
@@ -136,13 +133,35 @@ static u32  depth_pitch;
 static u32  depth_offset;
 static u32* depth_buffer;
 
+#define GCM_LABEL_INDEX 255
+static u32 slabelval = 1;
+
 static void CreateContext(void) {
 	void* host_addr = memalign(1024 * 1024, HOST_SIZE);
 	rsxInit(&context, CB_SIZE, HOST_SIZE, host_addr);
 }
 
+static void WaitRSXFinish(void) {
+	rsxSetWriteBackendLabel(context, GCM_LABEL_INDEX, slabelval);
+	rsxFlushBuffer(context);
+
+	while (*(vu32*)gcmGetLabelAddress(GCM_LABEL_INDEX) != slabelval)
+		usleep(30);
+
+	slabelval++;
+}
+
+static void WaitRSXIdle(void) {
+	rsxSetWriteBackendLabel(context, GCM_LABEL_INDEX, slabelval);
+	rsxSetWaitLabel(context,         GCM_LABEL_INDEX, slabelval);
+
+	slabelval++;
+	WaitRSXFinish();
+}
+
 static void ConfigureVideo(void) {
 	videoState state;
+    WaitRSXIdle();
 	videoGetState(0, 0, &state);
 
 	videoConfiguration vconfig = { 0 };
@@ -202,7 +221,7 @@ void SetRenderTarget(u32 index) {
 	sf.depthOffset		= depth_offset;
 	sf.depthPitch		= depth_pitch;
 
-	sf.type		= GCM_SURFACE_TYPE_LINEAR;
+	sf.type		        = GCM_SURFACE_TYPE_LINEAR;
 	sf.antiAlias		= GCM_SURFACE_CENTER_1;
 
 	sf.width		= DisplayInfo.Width;
@@ -210,7 +229,7 @@ void SetRenderTarget(u32 index) {
 	sf.x			= 0;
 	sf.y			= 0;
 
-	rsxSetSurface(context,&sf);
+	rsxSetSurface(context, &sf);
 }
 
 static void InitGfxContext(void) {
@@ -249,6 +268,7 @@ void Gfx_Free(void) { Gfx_FreeState(); }
 
 cc_bool Gfx_TryRestoreContext(void) { return true; }
 cc_bool Gfx_WarnIfNecessary(void)   { return false; }
+cc_bool Gfx_GetUIOptions(struct MenuOptionsScreen* s) { return false; }
 
 void Gfx_RestoreState(void) {
 	InitDefaultResources();
@@ -275,7 +295,7 @@ u32* Gfx_AllocImage(u32* offset, s32 w, s32 h) {
 void Gfx_TransferImage(u32 offset, s32 w, s32 h) {
 	rsxSetTransferImage(context, GCM_TRANSFER_LOCAL_TO_LOCAL,
 		color_offset[cur_fb], color_pitch, 0, 0,
-		offset, w * 4, 0, 0, 
+		offset,               w * 4,       0, 0, 
 		w, h, 4);
 }
 
@@ -289,20 +309,32 @@ void Gfx_SetFaceCulling(cc_bool enabled) {
 	rsxSetCullFaceEnable(context, enabled);
 }
 
-void Gfx_SetAlphaBlending(cc_bool enabled) {
+static void SetAlphaBlend(cc_bool enabled) {
 	rsxSetBlendEnable(context, enabled);
 }
 void Gfx_SetAlphaArgBlend(cc_bool enabled) { }
 
-void Gfx_ClearCol(PackedCol color) {
-        cc_uint32 R = PackedCol_R(color);
-        cc_uint32 G = PackedCol_G(color);
-        cc_uint32 B = PackedCol_B(color);
-        
-        clearColor  = B | (G << 8) | (R << 16) | (0xFF << 24);
+void Gfx_ClearColor(PackedCol color) {
+	cc_uint32 R = PackedCol_R(color);
+	cc_uint32 G = PackedCol_G(color);
+	cc_uint32 B = PackedCol_B(color);
+
+	clearColor  = B | (G << 8) | (R << 16) | (0xFF << 24);
 }
 
-void Gfx_SetColWriteMask(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
+void Gfx_SetDepthWrite(cc_bool enabled) {
+	rsxSetDepthWriteEnable(context, enabled);
+}
+
+void Gfx_SetDepthTest(cc_bool enabled) {
+	rsxSetDepthTestEnable(context, enabled);
+}
+
+static void SetAlphaTest(cc_bool enabled) {
+	rsxSetAlphaTestEnable(context, enabled);
+}
+
+static void SetColorWrite(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
 	unsigned mask = 0;
 	if (r) mask |= GCM_COLOR_MASK_R;
 	if (g) mask |= GCM_COLOR_MASK_G;
@@ -312,32 +344,10 @@ void Gfx_SetColWriteMask(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
 	rsxSetColorMask(context, mask);
 }
 
-static cc_bool depth_write = true, depth_test = true;
-static void UpdateDepthState(void) {
-	// match Desktop behaviour, where disabling depth testing also disables depth writing
-	rsxSetDepthWriteEnable(context, depth_write & depth_test);
-	rsxSetDepthTestEnable(context,  depth_test);
-}
-
-void Gfx_SetDepthWrite(cc_bool enabled) {
-	depth_write = enabled;
-	UpdateDepthState();
-}
-
-void Gfx_SetDepthTest(cc_bool enabled) {
-	depth_test = enabled;
-	UpdateDepthState();
-}
-
-void Gfx_SetTexturing(cc_bool enabled) { }
-
-void Gfx_SetAlphaTest(cc_bool enabled) {
-	rsxSetAlphaTestEnable(context, enabled);
-}
-
 void Gfx_DepthOnlyRendering(cc_bool depthOnly) {
 	cc_bool enabled = !depthOnly;
-	Gfx_SetColWriteMask(enabled, enabled, enabled, enabled);
+	SetColorWrite(enabled & gfx_colorMask[0], enabled & gfx_colorMask[1], 
+				  enabled & gfx_colorMask[2], enabled & gfx_colorMask[3]);
 }
 
 
@@ -349,30 +359,30 @@ void Gfx_CalcOrthoMatrix(struct Matrix* matrix, float width, float height, float
 	// TODO: should it be like OpenGL? ???
 	*matrix = Matrix_Identity;
 
-	matrix->row1.X =  2.0f / width;
-	matrix->row2.Y = -2.0f / height;
-	matrix->row3.Z =  1.0f / (zNear - zFar);
+	matrix->row1.x =  2.0f / width;
+	matrix->row2.y = -2.0f / height;
+	matrix->row3.z =  1.0f / (zNear - zFar);
 
-	matrix->row4.X = -1.0f;
-	matrix->row4.Y =  1.0f;
-	matrix->row4.Z = zNear / (zNear - zFar);
+	matrix->row4.x = -1.0f;
+	matrix->row4.y =  1.0f;
+	matrix->row4.z = zNear / (zNear - zFar);
 }
 
-static double Cotangent(double x) { return Math_Cos(x) / Math_Sin(x); }
+static float Cotangent(float x) { return Math_CosF(x) / Math_SinF(x); }
 void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, float zFar) {
 	float zNear = 0.1f;
-	float c = (float)Cotangent(0.5f * fov);
+	float c = Cotangent(0.5f * fov);
 
 	// Same as Direct3D9
 	// TODO: should it be like OpenGL? ???
 	*matrix = Matrix_Identity;
 
-	matrix->row1.X =  c / aspect;
-	matrix->row2.Y =  c;
-	matrix->row3.Z = zFar / (zNear - zFar);
-	matrix->row3.W = -1.0f;
-	matrix->row4.Z = (zNear * zFar) / (zNear - zFar);
-	matrix->row4.W =  0.0f;
+	matrix->row1.x =  c / aspect;
+	matrix->row2.y =  c;
+	matrix->row3.z = zFar / (zNear - zFar);
+	matrix->row3.w = -1.0f;
+	matrix->row4.z = (zNear * zFar) / (zNear - zFar);
+	matrix->row4.w =  0.0f;
 }
 
 
@@ -387,12 +397,11 @@ void Gfx_GetApiInfo(cc_string* info) {
 	int pointerSize = sizeof(void*) * 8;
 
 	String_Format1(info, "-- Using PS3 (%i bit) --\n", &pointerSize);
-	String_Format2(info, "Max texture size: (%i, %i)\n", &Gfx.MaxTexWidth, &Gfx.MaxTexHeight);
+	PrintMaxTextureInfo(info);
 }
 
-void Gfx_SetFpsLimit(cc_bool vsync, float minFrameMs) {
-	gfx_minFrameMs = minFrameMs;
-	gfx_vsync      = vsync;
+void Gfx_SetVSync(cc_bool vsync) {
+	gfx_vsync = vsync;
 }
 
 static void ResetFrameState(void) {
@@ -418,25 +427,32 @@ static void ResetFrameState(void) {
 						GCM_USER_CLIP_PLANE_DISABLE);
         
 	// NOTE: Must be called each frame, otherwise renders upside down at 4x zoom
-	Gfx_OnWindowResize();
+	Gfx_SetViewport(0, 0, Game.Width, Game.Height);
+	Gfx_SetScissor (0, 0, Game.Width, Game.Height);
 }
 
 // https://github.com/ps3dev/PSL1GHT/blob/master/ppu/include/rsx/rsx.h#L30
 static cc_bool everFlipped;
-void Gfx_BeginFrame(void) {
-	// TODO: remove everFlipped
+void Gfx_WaitFlip(void) {
 	if (everFlipped) {
 		while (gcmGetFlipStatus() != 0) usleep(200);
 	}
 	
-	ResetFrameState();
 	everFlipped = true;
 	gcmResetFlipStatus();
 }
 
-void Gfx_Clear(void) {
-	rsxClearSurface(context, GCM_CLEAR_R | GCM_CLEAR_G | GCM_CLEAR_B | GCM_CLEAR_A 
-		| GCM_CLEAR_S | GCM_CLEAR_Z);
+void Gfx_BeginFrame(void) {
+	Gfx_WaitFlip();
+	ResetFrameState();
+}
+
+void Gfx_ClearBuffers(GfxBuffers buffers) {
+	int targets = 0;
+	if (buffers & GFX_BUFFER_COLOR) targets |= (GCM_CLEAR_R | GCM_CLEAR_G | GCM_CLEAR_B | GCM_CLEAR_A);
+	if (buffers & GFX_BUFFER_DEPTH) targets |= (GCM_CLEAR_S | GCM_CLEAR_Z);
+	
+	rsxClearSurface(context, targets); 
 }
 
 void Gfx_EndFrame(void) {
@@ -446,15 +462,15 @@ void Gfx_EndFrame(void) {
 
 	cur_fb ^= 1;
 	SetRenderTarget(cur_fb);
-	
-	if (gfx_minFrameMs) LimitFPS();
 }
 
 void Gfx_OnWindowResize(void) {
+	Gfx_SetViewport(0, 0, Game.Width, Game.Height);
+	Gfx_SetScissor (0, 0, Game.Width, Game.Height);
+}
+
+void Gfx_SetViewport(int x, int y, int w, int h) {
 	f32 scale[4], offset[4];
-	
-	u16 w = DisplayInfo.Width;
-	u16 h = DisplayInfo.Height;
 	f32 zmin = 0.0f;
 	f32 zmax = 1.0f;
 	
@@ -462,19 +478,22 @@ void Gfx_OnWindowResize(void) {
 	scale[1]  = h * -0.5f;
 	scale[2]  = (zmax - zmin) * 0.5f;
 	scale[3]  = 0.0f;
-	offset[0] = w * 0.5f;
-	offset[1] = h * 0.5f;
+	offset[0] = x + w * 0.5f;
+	offset[1] = y + h * 0.5f;
 	offset[2] = (zmax + zmin) * 0.5f;
 	offset[3] = 0.0f;
 
-	rsxSetViewport(context, 0, 0, w, h, zmin, zmax, scale, offset);
-	rsxSetScissor(context,  0, 0, w, h);
+	rsxSetViewport(context, x, y, w, h, zmin, zmax, scale, offset);
 	
 	// TODO: even needed?
 	for (int i = 0; i < 8; i++)
 	{
 		rsxSetViewportClip(context, i, w, h);
 	}
+}
+
+void Gfx_SetScissor(int x, int y, int w, int h) {
+	rsxSetScissor(context, x, y, w, h);
 }
 
 
@@ -494,10 +513,8 @@ void Gfx_DeleteIb(GfxResourceID* ib) { }
 /*########################################################################################################################*
 *------------------------------------------------------Vertex buffers-----------------------------------------------------*
 *#########################################################################################################################*/
-GfxResourceID Gfx_CreateVb(VertexFormat fmt, int count) {
-	void* data = rsxMemalign(128, count * strideSizes[fmt]);
-	if (!data) Logger_Abort("Failed to allocate memory for GFX VB");
-	return data;
+static GfxResourceID Gfx_AllocStaticVb(VertexFormat fmt, int count) {
+	return rsxMemalign(128, count * strideSizes[fmt]);
 }
 
 void Gfx_BindVb(GfxResourceID vb) { 
@@ -536,11 +553,11 @@ void Gfx_UnlockVb(GfxResourceID vb) {
 }
 
 
-GfxResourceID Gfx_CreateDynamicVb(VertexFormat fmt, int maxVertices) {
-	void* data = rsxMemalign(128, maxVertices * strideSizes[fmt]);
-	if (!data) Logger_Abort("Failed to allocate memory for GFX VB");
-	return data;
+static GfxResourceID Gfx_AllocDynamicVb(VertexFormat fmt, int maxVertices) {
+	return rsxMemalign(128, maxVertices * strideSizes[fmt]);
 }
+
+void Gfx_BindDynamicVb(GfxResourceID vb) { Gfx_BindVb(vb); }
 
 void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 	vb_size = count * strideSizes[fmt];
@@ -552,11 +569,7 @@ void Gfx_UnlockDynamicVb(GfxResourceID vb) {
 	rsxInvalidateVertexCache(context); // TODO needed?
 }
 
-void Gfx_SetDynamicVbData(GfxResourceID vb, void* vertices, int vCount) {
-	Mem_Copy(vb, vertices, vCount * gfx_stride);
-	Gfx_BindVb(vb);
-	rsxInvalidateVertexCache(context); // TODO needed?
-}
+void Gfx_DeleteDynamicVb(GfxResourceID* vb) { Gfx_DeleteVb(vb); }
 
 
 /*########################################################################################################################*
@@ -568,13 +581,14 @@ typedef struct CCTexture_ {
 	cc_uint32 pixels[];
 } CCTexture;
 
-GfxResourceID Gfx_CreateTexture(struct Bitmap* bmp, cc_uint8 flags, cc_bool mipmaps) {
+static GfxResourceID Gfx_AllocTexture(struct Bitmap* bmp, int rowWidth, cc_uint8 flags, cc_bool mipmaps) {
 	int size = bmp->width * bmp->height * 4;
 	CCTexture* tex = (CCTexture*)rsxMemalign(128, 128 + size);
 	
 	tex->width  = bmp->width;
 	tex->height = bmp->height;
-	Mem_Copy(tex->pixels, bmp->scan0, size);
+	CopyTextureData(tex->pixels, bmp->width * BITMAPCOLOR_SIZE, 
+					bmp, rowWidth * BITMAPCOLOR_SIZE);
 	return tex;
 }
 
@@ -625,15 +639,12 @@ void Gfx_UpdateTexture(GfxResourceID texId, int x, int y, struct Bitmap* part, i
 	CCTexture* tex = (CCTexture*)texId;
 	
 	// NOTE: Only valid for LINEAR textures
-	cc_uint32* dst = (tex->pixels + x) + y * tex->width;	
-	CopyTextureData(dst, tex->width * 4, part, rowWidth << 2);
+	BitmapCol* dst = (tex->pixels + x) + y * tex->width;	
+	CopyTextureData(dst, tex->width * BITMAPCOLOR_SIZE, 
+					part, rowWidth  * BITMAPCOLOR_SIZE);
 	
 	rsxInvalidateTextureCache(context, GCM_INVALIDATE_TEXTURE);
 	/* TODO */
-}
-
-void Gfx_UpdateTexturePart(GfxResourceID texId, int x, int y, struct Bitmap* part, cc_bool mipmaps) {
-	Gfx_UpdateTexture(texId, x, y, part, part->width, mipmaps);
 }
 
 void Gfx_EnableMipmaps(void)  { }
@@ -665,15 +676,17 @@ void Gfx_SetFogMode(FogFunc func) {/* TODO */
 static struct Matrix _view, _proj;
 
 void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
-	struct Matrix* dst = type == MATRIX_PROJECTION ? &_proj : &_view;
+	struct Matrix* dst = type == MATRIX_PROJ ? &_proj : &_view;
 	*dst = *matrix;
 
 	Matrix_Mul(&mvp, &_view, &_proj);
 	VP_UpdateUniforms();
 }
 
-void Gfx_LoadIdentityMatrix(MatrixType type) {
-	Gfx_LoadMatrix(type, &Matrix_Identity);
+void Gfx_LoadMVP(const struct Matrix* view, const struct Matrix* proj, struct Matrix* mvp) {
+	Gfx_LoadMatrix(MATRIX_VIEW, view);
+	Gfx_LoadMatrix(MATRIX_PROJ, proj);
+	Matrix_Mul(mvp, view, proj);
 }
 
 void Gfx_EnableTextureOffset(float x, float y) {

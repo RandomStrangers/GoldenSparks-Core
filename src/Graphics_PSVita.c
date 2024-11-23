@@ -7,10 +7,7 @@
 #include <vitasdk.h>
 
 // TODO track last frame used on
-/* Current format and size of vertices */
-static int gfx_stride, gfx_format = -1;
 static cc_bool gfx_depthOnly;
-static cc_bool gfx_alphaTesting, gfx_alphaBlending;
 static int frontBufferIndex, backBufferIndex;
 // Inspired from
 // https://github.com/xerpi/gxmfun/blob/master/source/main.c
@@ -26,6 +23,7 @@ static int frontBufferIndex, backBufferIndex;
 static void GPUBuffers_DeleteUnreferenced(void);
 static void GPUTextures_DeleteUnreferenced(void);
 static cc_uint32 frameCounter;
+static cc_bool in_scene;
 
 static SceGxmContext* gxm_context;
 
@@ -50,7 +48,7 @@ static void*  gxm_depth_stencil_surface_addr;
 static SceGxmDepthStencilSurface gxm_depth_stencil_surface;
 
 static SceGxmShaderPatcher *gxm_shader_patcher;
-static const int shader_patcher_buffer_size = 64 * 1024;;
+static const int shader_patcher_buffer_size = 64 * 1024;
 static SceUID gxm_shader_patcher_buffer_uid;
 static void*  gxm_shader_patcher_buffer_addr;
 
@@ -101,8 +99,9 @@ typedef struct CCFragmentProgram {
 *#########################################################################################################################*/
 #define ALIGNUP(size, a) (((size) + ((a) - 1)) & ~((a) - 1))
 
-void* AllocGPUMemory(int size, int type, int gpu_access, SceUID* ret_uid) {
-	SceUID uid;
+void* AllocGPUMemory(int size, int type, int gpu_access, SceUID* ret_uid, const char* memType) {
+	char buffer[128];
+	cc_string str;
 	void* addr;
 	
 	if (type == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW) {
@@ -110,16 +109,26 @@ void* AllocGPUMemory(int size, int type, int gpu_access, SceUID* ret_uid) {
 	} else {
 		size = ALIGNUP(size, 4 * 1024);
 	}
+	String_InitArray_NT(str, buffer);
 	
 	// https://wiki.henkaku.xyz/vita/SceSysmem
-	uid = sceKernelAllocMemBlock("GPU memory", type, size, NULL);
-	if (uid < 0) Logger_Abort2(uid, "Failed to allocate GPU memory block");
+	SceUID uid = sceKernelAllocMemBlock(memType, type, size, NULL);
+	if (uid < 0) {
+		String_Format2(&str, "Failed to allocate GPU memory block for %c (%i bytes)%N", memType, &size);
+		Logger_Abort2(uid, buffer);
+	}
 		
 	int res1 = sceKernelGetMemBlockBase(uid, &addr);
-	if (res1 < 0) Logger_Abort2(res1, "Failed to get base of GPU memory block");
+	if (res1 < 0) {
+		String_Format1(&str, "Failed to get base of GPU memory block for %c%N", memType);
+		Logger_Abort2(res1, buffer);
+	}
 		
 	int res2 = sceGxmMapMemory(addr, size, gpu_access);
-	if (res1 < 0) Logger_Abort2(res2, "Failed to map memory for GPU usage");
+	if (res2 < 0) {
+		String_Format2(&str, "Failed to map memory for GPU usage for %c (%i bytes)%N", memType, &size);
+		Logger_Abort2(res2, buffer);
+	}
 	// https://wiki.henkaku.xyz/vita/GPU
 	
 	*ret_uid = uid;
@@ -201,14 +210,18 @@ static void VP_DirtyUniform(int uniform) {
 
 static void VP_ReloadUniforms(void) {
 	VertexProgram* VP = VP_Active;
-	if (!VP) return;
+	// Calling sceGxmReserveVertexDefaultUniformBuffer when not in a scene
+	//   results in SCE_GXM_ERROR_NOT_WITHIN_SCENE on real hardware
+	if (!VP || !in_scene) return;
+	int ret;
 
 	if (VP->dirtyUniforms & VP_UNI_MATRIX) {
-		void *uniform_buffer;
+		void *uniform_buffer = NULL;
 		
-		sceGxmReserveVertexDefaultUniformBuffer(gxm_context, &uniform_buffer);
-		sceGxmSetUniformDataF(uniform_buffer, VP->param_uni_mvp,
-			0, 4 * 4, transposed_mvp);
+		ret = sceGxmReserveVertexDefaultUniformBuffer(gxm_context, &uniform_buffer);
+		if (ret) Logger_Abort2(ret, "Reserving uniform buffer");
+		ret = sceGxmSetUniformDataF(uniform_buffer, VP->param_uni_mvp, 0, 4 * 4, transposed_mvp);
+		if (ret) Logger_Abort2(ret, "Updating uniform buffer");
 			
 		VP->dirtyUniforms &= ~VP_UNI_MATRIX;
 	}
@@ -221,6 +234,7 @@ static void VP_SwitchActive(void) {
 	if (VP == VP_Active) return;
 	VP_Active = VP;
 	
+	VP->dirtyUniforms |= VP_UNI_MATRIX; // Need to update uniforms after switching program
 	sceGxmSetVertexProgram(gxm_context, VP->programPatched);
 	VP_ReloadUniforms();
 }
@@ -238,11 +252,11 @@ static void FP_SwitchActive(void) {
 	// [normal rendering, blend rendering, no rendering]
 	if (gfx_depthOnly) {
 		index += 2;
-	} else if (gfx_alphaBlending) {
+	} else if (gfx_alphaBlend) {
 		index += 1;
 	}
 	
-	if (gfx_alphaTesting) index += 2 * 3;
+	if (gfx_alphaTest) index += 2 * 3;
 	
 	FragmentProgram* FP = &FP_list[index];
 	if (FP == FP_Active) return;
@@ -294,6 +308,15 @@ static void CreateFragmentPrograms(int index, const SceGxmProgram* fragProgram, 
 *-----------------------------------------------------Initialisation------------------------------------------------------*
 *#########################################################################################################################*/
 struct DQCallbackData { void* addr; };
+void (*DQ_OnNextFrame)(void* fb);
+
+static void DQ_OnNextFrame3D(void* fb) {
+	if (gfx_vsync) sceDisplayWaitVblankStart();
+	
+	GPUBuffers_DeleteUnreferenced();
+	GPUTextures_DeleteUnreferenced();
+	frameCounter++;
+}
 
 static void DQCallback(const void *callback_data) {
 	SceDisplayFrameBuf fb = { 0 }; 
@@ -306,19 +329,14 @@ static void DQCallback(const void *callback_data) {
 	fb.height = DISPLAY_HEIGHT;
 
 	sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
-	
-	if (gfx_vsync) sceDisplayWaitVblankStart();
-	
-	 GPUBuffers_DeleteUnreferenced();
-	GPUTextures_DeleteUnreferenced();
-	frameCounter++;
+	DQ_OnNextFrame(fb.base);
 }
 
-static void InitGXM(void) {
+void Gfx_InitGXM(void) { // called from Window_Init
 	SceGxmInitializeParams params = { 0 };
 	
-	params.displayQueueMaxPendingCount = MAX_PENDING_SWAPS;
-	params.displayQueueCallback = DQCallback;
+	params.displayQueueMaxPendingCount  = MAX_PENDING_SWAPS;
+	params.displayQueueCallback         = DQCallback;
 	params.displayQueueCallbackDataSize = sizeof(struct DQCallbackData);
 	params.parameterBufferSize = SCE_GXM_DEFAULT_PARAMETER_BUFFER_SIZE;
 	
@@ -328,15 +346,15 @@ static void InitGXM(void) {
 static void AllocRingBuffers(void) {
 	vdm_ring_buffer_addr = AllocGPUMemory(SCE_GXM_DEFAULT_VDM_RING_BUFFER_SIZE,
 			SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, SCE_GXM_MEMORY_ATTRIB_READ,
-			&vdm_ring_buffer_uid);
+			&vdm_ring_buffer_uid, "VDM ring buffer");
 
 	vertex_ring_buffer_addr = AllocGPUMemory(SCE_GXM_DEFAULT_VERTEX_RING_BUFFER_SIZE,
 			SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, SCE_GXM_MEMORY_ATTRIB_READ,
-			&vertex_ring_buffer_uid);
+			&vertex_ring_buffer_uid, "Vertex ring buffer");
 
 	fragment_ring_buffer_addr = AllocGPUMemory(SCE_GXM_DEFAULT_FRAGMENT_RING_BUFFER_SIZE,
 			SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, SCE_GXM_MEMORY_ATTRIB_READ,
-			&fragment_ring_buffer_uid);
+			&fragment_ring_buffer_uid, "Fragment ring buffer");
 
 	fragment_usse_ring_buffer_addr = AllocGPUFragmentUSSE(SCE_GXM_DEFAULT_FRAGMENT_USSE_RING_BUFFER_SIZE,
 			&fragment_ring_buffer_uid, &fragment_usse_offset);
@@ -345,7 +363,7 @@ static void AllocRingBuffers(void) {
 static void AllocGXMContext(void) {
 	SceGxmContextParams params = { 0 };
 	
-	params.hostMem     = Mem_TryAlloc(1, SCE_GXM_MINIMUM_CONTEXT_HOST_MEM_SIZE);
+	params.hostMem     = Mem_Alloc(1, SCE_GXM_MINIMUM_CONTEXT_HOST_MEM_SIZE, "Host memory");
 	params.hostMemSize = SCE_GXM_MINIMUM_CONTEXT_HOST_MEM_SIZE;
 	
 	params.vdmRingBufferMem     = vdm_ring_buffer_addr;
@@ -379,7 +397,7 @@ static void AllocColorBuffer(int i) {
 	int size = ALIGNUP(4 * DISPLAY_STRIDE * DISPLAY_HEIGHT, 1 * 1024 * 1024);
 	
 	gxm_color_surfaces_addr[i] = AllocGPUMemory(size, SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
-									SCE_GXM_MEMORY_ATTRIB_RW, &gxm_color_surfaces_uid[i]);
+									SCE_GXM_MEMORY_ATTRIB_RW, &gxm_color_surfaces_uid[i], "color buffer");
 
 	sceGxmColorSurfaceInit(&gxm_color_surfaces[i],
 		SCE_GXM_COLOR_FORMAT_A8B8G8R8,
@@ -398,7 +416,7 @@ static void AllocDepthBuffer(void) {
 	int samples = width * height;
 
 	gxm_depth_stencil_surface_addr = AllocGPUMemory(4 * samples, SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
-										SCE_GXM_MEMORY_ATTRIB_RW, &gxm_depth_stencil_surface_uid);
+										SCE_GXM_MEMORY_ATTRIB_RW, &gxm_depth_stencil_surface_uid, "depth buffer");
 
 	sceGxmDepthStencilSurfaceInit(&gxm_depth_stencil_surface,
 		SCE_GXM_DEPTH_STENCIL_FORMAT_S8D24,
@@ -409,7 +427,7 @@ static void AllocDepthBuffer(void) {
 static void AllocShaderPatcherMemory(void) {
 	gxm_shader_patcher_buffer_addr = AllocGPUMemory(shader_patcher_buffer_size, 
 		SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, SCE_GXM_MEMORY_ATTRIB_READ,
-		&gxm_shader_patcher_buffer_uid);
+		&gxm_shader_patcher_buffer_uid, "shader patcher");
 
 	gxm_shader_patcher_vertex_usse_addr = AllocGPUVertexUSSE(
 		shader_patcher_vertex_usse_size, &gxm_shader_patcher_vertex_usse_uid,
@@ -523,17 +541,22 @@ static void SetDefaultStates(void) {
 	sceGxmSetBackDepthFunc(gxm_context,  SCE_GXM_DEPTH_FUNC_LESS_EQUAL);
 }
 
-static void InitGPU(void) {
-	InitGXM();
-	AllocRingBuffers();
-	AllocGXMContext();
-	
-	AllocRenderTarget();
+void Gfx_AllocFramebuffers(void) { // called from Window_Init
 	for (int i = 0; i < NUM_DISPLAY_BUFFERS; i++) 
 	{
 		AllocColorBuffer(i);
 	}
 	AllocDepthBuffer();
+	
+	frontBufferIndex = NUM_DISPLAY_BUFFERS - 1;
+	backBufferIndex  = 0;
+}
+
+static void InitGPU(void) {
+	AllocRingBuffers();
+	AllocGXMContext();
+	
+	AllocRenderTarget();
 	AllocShaderPatcherMemory();
 	AllocShaderPatcher();
 	
@@ -546,18 +569,18 @@ static void InitGPU(void) {
 }
 
 void Gfx_Create(void) {
+	DQ_OnNextFrame = DQ_OnNextFrame3D;
 	if (!Gfx.Created) InitGPU();
+	in_scene = false;
 	
-	Gfx.MaxTexWidth  = 512;
-	Gfx.MaxTexHeight = 512;
+	Gfx.MaxTexWidth  = 1024;
+	Gfx.MaxTexHeight = 1024;
+	Gfx.MaxTexSize   = 512 * 512;
 	Gfx.Created      = true;
 	gfx_vsync        = true;
 	
 	Gfx_SetDepthTest(true);
 	Gfx_SetVertexFormat(VERTEX_FORMAT_COLOURED);
-	frontBufferIndex = NUM_DISPLAY_BUFFERS - 1;
-	backBufferIndex  = 0;
-	
 	Gfx_RestoreState();
 }
 
@@ -603,7 +626,7 @@ struct GPUTexture* GPUTexture_Alloc(int size) {
 	
 	tex->data = AllocGPUMemory(size, 
 		SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, SCE_GXM_MEMORY_ATTRIB_READ,
-		&tex->uid);
+		&tex->uid, "texture");
 	return tex;
 }
 
@@ -612,22 +635,17 @@ static void GPUTexture_Unref(GfxResourceID* resource) {
 	struct GPUTexture* tex = (struct GPUTexture*)(*resource);
 	if (!tex) return;
 	*resource = NULL;
-	
-	cc_uintptr addr = tex;
-	Platform_Log1("TEX UNREF %h", &addr);
+
 	LinkedList_Append(tex, del_textures_head, del_textures_tail);
 }
 
 static void GPUTexture_Free(struct GPUTexture* tex) {
-	cc_uintptr addr = tex;
-	Platform_Log1("TEX DELETE %h", &addr);
 	FreeGPUMemory(tex->uid);
 	Mem_Free(tex);
 }
 
 static void GPUTextures_DeleteUnreferenced(void) {
 	if (!del_textures_head) return;
-	del_textures_tail = NULL;
 	
 	struct GPUTexture* tex;
 	struct GPUTexture* next;
@@ -639,15 +657,15 @@ static void GPUTextures_DeleteUnreferenced(void) {
 		
 		if (tex->lastFrame + 4 > frameCounter) {
 			// texture was used within last 4 fames
-			prev              = tex;
-			del_textures_tail = tex; // update end of linked list
-			
-			cc_uintptr addr = tex;
-			Platform_Log1("TEX CHECK %h", &addr);
+			prev = tex;
 		} else {
 			// advance the head of the linked list
 			if (del_textures_head == tex) 
 				del_textures_head = next;
+
+			// update end of linked list if necessary
+			if (del_textures_tail == tex)
+				del_textures_tail = prev;
 			
 			// unlink this texture from the linked list
 			if (prev) prev->next = next;
@@ -661,10 +679,11 @@ static void GPUTextures_DeleteUnreferenced(void) {
 /*########################################################################################################################*
 *---------------------------------------------------------Textures--------------------------------------------------------*
 *#########################################################################################################################*/
-GfxResourceID Gfx_CreateTexture(struct Bitmap* bmp, cc_uint8 flags, cc_bool mipmaps) {
+static GfxResourceID Gfx_AllocTexture(struct Bitmap* bmp, int rowWidth, cc_uint8 flags, cc_bool mipmaps) {
 	int size = bmp->width * bmp->height * 4;
 	struct GPUTexture* tex = GPUTexture_Alloc(size);
-	Mem_Copy(tex->data, bmp->scan0, size);
+	CopyTextureData(tex->data, bmp->width * BITMAPCOLOR_SIZE,
+					bmp, rowWidth * BITMAPCOLOR_SIZE);
             
 	sceGxmTextureInitLinear(&tex->texture, tex->data,
 		SCE_GXM_TEXTURE_FORMAT_A8B8G8R8, bmp->width, bmp->height, 0);
@@ -679,15 +698,12 @@ void Gfx_UpdateTexture(GfxResourceID texId, int x, int y, struct Bitmap* part, i
 	int texWidth = sceGxmTextureGetWidth(&tex->texture);
 	
 	// NOTE: Only valid for LINEAR textures
-	cc_uint32* dst = (tex->data + x) + y * texWidth;
+	BitmapCol* dst = (tex->data + x) + y * texWidth;
 	
-	CopyTextureData(dst, texWidth * 4, part, rowWidth << 2);
+	CopyTextureData(dst, texWidth  * BITMAPCOLOR_SIZE,
+					part, rowWidth * BITMAPCOLOR_SIZE);
 	// TODO: Do line by line and only invalidate the actually changed parts of lines?
 	//sceKernelDcacheWritebackInvalidateRange(dst, (tex->width * part->height) * 4);
-}
-
-void Gfx_UpdateTexturePart(GfxResourceID texId, int x, int y, struct Bitmap* part, cc_bool mipmaps) {
-	Gfx_UpdateTexture(texId, x, y, part, part->width, mipmaps);
 }
 
 void Gfx_DeleteTexture(GfxResourceID* texId) {
@@ -715,19 +731,19 @@ void Gfx_CalcOrthoMatrix(struct Matrix* matrix, float width, float height, float
 	// NOTE: Shared with OpenGL. might be wrong to do that though?
 	*matrix = Matrix_Identity;
 
-	matrix->row1.X =  2.0f / width;
-	matrix->row2.Y = -2.0f / height;
-	matrix->row3.Z = -2.0f / (zFar - zNear);
+	matrix->row1.x =  2.0f / width;
+	matrix->row2.y = -2.0f / height;
+	matrix->row3.z = -2.0f / (zFar - zNear);
 
-	matrix->row4.X = -1.0f;
-	matrix->row4.Y =  1.0f;
-	matrix->row4.Z = -(zFar + zNear) / (zFar - zNear);
+	matrix->row4.x = -1.0f;
+	matrix->row4.y =  1.0f;
+	matrix->row4.z = -(zFar + zNear) / (zFar - zNear);
 }
 
-static double Cotangent(double x) { return Math_Cos(x) / Math_Sin(x); }
+static float Cotangent(float x) { return Math_CosF(x) / Math_SinF(x); }
 void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, float zFar) {
 	float zNear = 0.1f;
-	float c = (float)Cotangent(0.5f * fov);
+	float c = Cotangent(0.5f * fov);
 
 	// Transposed, source https://learn.microsoft.com/en-us/windows/win32/opengl/glfrustum
 	// For a FOV based perspective matrix, left/right/top/bottom are calculated as:
@@ -735,12 +751,12 @@ void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, f
 	// Calculations are simplified because of left/right and top/bottom symmetry
 	*matrix = Matrix_Identity;
 
-	matrix->row1.X =  c / aspect;
-	matrix->row2.Y =  c;
-	matrix->row3.Z = -(zFar + zNear) / (zFar - zNear);
-	matrix->row3.W = -1.0f;
-	matrix->row4.Z = -(2.0f * zFar * zNear) / (zFar - zNear);
-	matrix->row4.W =  0.0f;
+	matrix->row1.x =  c / aspect;
+	matrix->row2.y =  c;
+	matrix->row3.z = -(zFar + zNear) / (zFar - zNear);
+	matrix->row3.w = -1.0f;
+	matrix->row4.z = -(2.0f * zFar * zNear) / (zFar - zNear);
+	matrix->row4.w =  0.0f;
 }
 
 
@@ -752,18 +768,16 @@ cc_result Gfx_TakeScreenshot(struct Stream* output) {
 }
 
 void Gfx_GetApiInfo(cc_string* info) {
-	int pointerSize = sizeof(void*) * 8;
-
-	String_Format1(info, "-- Using PS VITA (%i bit) --\n", &pointerSize);
-	String_Format2(info, "Max texture size: (%i, %i)\n", &Gfx.MaxTexWidth, &Gfx.MaxTexHeight);
+	String_AppendConst(info, "-- Using PS Vita --\n");
+	PrintMaxTextureInfo(info);
 }
 
-void Gfx_SetFpsLimit(cc_bool vsync, float minFrameMs) {
-	gfx_minFrameMs = minFrameMs;
-	gfx_vsync      = vsync;
+void Gfx_SetVSync(cc_bool vsync) {
+	gfx_vsync = vsync;
 }
 
 void Gfx_BeginFrame(void) {
+	in_scene = true;
 	sceGxmBeginScene(gxm_context,
 			0, gxm_render_target,
 			NULL, NULL,
@@ -772,10 +786,21 @@ void Gfx_BeginFrame(void) {
 			&gxm_depth_stencil_surface);
 }
 
-void Gfx_EndFrame(void) {
-	//Platform_LogConst("SWAP BUFFERS");
-	sceGxmEndScene(gxm_context, NULL, NULL);
+void Gfx_UpdateCommonDialogBuffers(void) {
+	SceCommonDialogUpdateParam param = { 0 };
+	param.renderTarget.colorFormat   = SCE_GXM_COLOR_FORMAT_A8B8G8R8;
+	param.renderTarget.surfaceType   = SCE_GXM_COLOR_SURFACE_LINEAR;
+	param.renderTarget.width         = DISPLAY_WIDTH;
+	param.renderTarget.height        = DISPLAY_HEIGHT;
+	param.renderTarget.strideInPixels   = DISPLAY_STRIDE;
+	param.renderTarget.colorSurfaceData = gxm_color_surfaces_addr[backBufferIndex];
+	param.renderTarget.depthSurfaceData = gxm_depth_stencil_surface.depthData;
+	param.displaySyncObject = gxm_sync_objects[backBufferIndex];
+	
+	sceCommonDialogUpdate(&param);
+}
 
+void Gfx_NextFramebuffer(void) {
 	struct DQCallbackData cb_data;
 	cb_data.addr = gxm_color_surfaces_addr[backBufferIndex];
 
@@ -785,11 +810,19 @@ void Gfx_EndFrame(void) {
 	// Cycle through to next buffer pair
 	frontBufferIndex = backBufferIndex;
 	backBufferIndex  = (backBufferIndex + 1) % NUM_DISPLAY_BUFFERS;
-		
-	if (gfx_minFrameMs) LimitFPS();
+}
+
+void Gfx_EndFrame(void) {
+	in_scene = false;
+	sceGxmEndScene(gxm_context, NULL, NULL);
+
+	Gfx_NextFramebuffer();
 }
 
 void Gfx_OnWindowResize(void) { }
+
+void Gfx_SetViewport(int x, int y, int w, int h) { }
+void Gfx_SetScissor (int x, int y, int w, int h) { }
 
 
 /*########################################################################################################################*
@@ -810,10 +843,7 @@ struct GPUBuffer* GPUBuffer_Alloc(int size) {
 	
 	buffer->data = AllocGPUMemory(size, 
 		SCE_KERNEL_MEMBLOCK_TYPE_USER_RW_UNCACHE, SCE_GXM_MEMORY_ATTRIB_READ,
-		&buffer->uid);
-		
-	cc_uintptr addr = buffer->data;
-	Platform_Log2("VB ALLOC %h = %i bytes", &addr, &size);
+		&buffer->uid, "buffer");
 	return buffer;
 }
 
@@ -824,21 +854,16 @@ static void GPUBuffer_Unref(GfxResourceID* resource) {
 	if (!buf) return;
 	*resource = NULL;
 	
-	cc_uintptr addr = buf;
-	Platform_Log1("VB UNREF %h", &addr);
 	LinkedList_Append(buf, del_buffers_head, del_buffers_tail);
 }
 
 static void GPUBuffer_Free(struct GPUBuffer* buf) {
-	cc_uintptr addr = buf;
-	Platform_Log1("VB DELETE %h", &addr);
 	FreeGPUMemory(buf->uid);
 	Mem_Free(buf);
 }
 
 static void GPUBuffers_DeleteUnreferenced(void) {
 	if (!del_buffers_head) return;
-	del_buffers_tail = NULL;
 	
 	struct GPUBuffer* buf;
 	struct GPUBuffer* next;
@@ -850,15 +875,15 @@ static void GPUBuffers_DeleteUnreferenced(void) {
 		
 		if (buf->lastFrame + 4 > frameCounter) {
 			// texture was used within last 4 fames
-			prev             = buf;
-			del_buffers_tail = buf; // update end of linked list
-			
-			cc_uintptr addr = buf;
-			Platform_Log1("VB CHECK %h", &addr);
+			prev = buf;
 		} else {
 			// advance the head of the linked list
 			if (del_buffers_head == buf) 
 				del_buffers_head = next;
+
+			// update end of linked list if necessary
+			if (del_buffers_tail == buf)
+				del_buffers_tail = prev;
 			
 			// unlink this texture from the linked list
 			if (prev) prev->next = next;
@@ -891,7 +916,7 @@ void Gfx_DeleteIb(GfxResourceID* ib) { GPUBuffer_Unref(ib); }
 /*########################################################################################################################*
 *-------------------------------------------------------Vertex buffers----------------------------------------------------*
 *#########################################################################################################################*/
-GfxResourceID Gfx_CreateVb(VertexFormat fmt, int count) {
+static GfxResourceID Gfx_AllocStaticVb(VertexFormat fmt, int count) {
 	return GPUBuffer_Alloc(count * strideSizes[fmt]);
 }
 
@@ -911,9 +936,11 @@ void* Gfx_LockVb(GfxResourceID vb, VertexFormat fmt, int count) {
 void Gfx_UnlockVb(GfxResourceID vb) { Gfx_BindVb(vb); }
 
 
-GfxResourceID Gfx_CreateDynamicVb(VertexFormat fmt, int maxVertices) {
+static GfxResourceID Gfx_AllocDynamicVb(VertexFormat fmt, int maxVertices) {
 	return GPUBuffer_Alloc(maxVertices * strideSizes[fmt]);
 }
+
+void Gfx_BindDynamicVb(GfxResourceID vb) { Gfx_BindVb(vb); }
 
 void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 	struct GPUBuffer* buffer = (struct GPUBuffer*)vb;
@@ -922,11 +949,7 @@ void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 
 void Gfx_UnlockDynamicVb(GfxResourceID vb) { Gfx_BindVb(vb); }
 
-void Gfx_SetDynamicVbData(GfxResourceID vb, void* vertices, int vCount) {
-	struct GPUBuffer* buffer = (struct GPUBuffer*)vb;
-	Mem_Copy(buffer->data, vertices, vCount * gfx_stride);
-	Gfx_BindVb(vb);
-}
+void Gfx_DeleteDynamicVb(GfxResourceID* vb) { Gfx_DeleteVb(vb); }
 
 
 /*########################################################################################################################*
@@ -952,13 +975,11 @@ void Gfx_SetFogMode(FogFunc func) {
  // TODO
 }
 
-void Gfx_SetAlphaTest(cc_bool enabled) {
-	gfx_alphaTesting = enabled;
+static void SetAlphaTest(cc_bool enabled) {
 	FP_SwitchActive();
 }
  
-void Gfx_SetAlphaBlending(cc_bool enabled) {
-	gfx_alphaBlending = enabled;
+static void SetAlphaBlend(cc_bool enabled) {
 	FP_SwitchActive();
 }
 
@@ -976,40 +997,24 @@ void Gfx_SetFaceCulling(cc_bool enabled) {
 void Gfx_SetAlphaArgBlend(cc_bool enabled) { }
 
 static PackedCol clear_color;
-void Gfx_ClearCol(PackedCol color) {
+void Gfx_ClearColor(PackedCol color) {
 	clear_color = color;
 }
 
-void Gfx_SetColWriteMask(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
+static void SetColorWrite(cc_bool r, cc_bool g, cc_bool b, cc_bool a) {
  // TODO
 }
 
-static cc_bool depth_write = true, depth_test = true;
-static void UpdateDepthWrite(void) {
-	// match Desktop behaviour, where disabling depth testing also disables depth writing
-	// TODO do we actually need to & here?
-	cc_bool enabled = depth_write & depth_test;
-	
+void Gfx_SetDepthWrite(cc_bool enabled) {
 	int mode = enabled ? SCE_GXM_DEPTH_WRITE_ENABLED : SCE_GXM_DEPTH_WRITE_DISABLED;
 	sceGxmSetFrontDepthWriteEnable(gxm_context, mode);
 	sceGxmSetBackDepthWriteEnable(gxm_context,  mode);
 }
 
-static void UpdateDepthFunction(void) {
-	int func = depth_test ? SCE_GXM_DEPTH_FUNC_LESS_EQUAL : SCE_GXM_DEPTH_FUNC_ALWAYS;
+void Gfx_SetDepthTest(cc_bool enabled) {
+	int func = enabled ? SCE_GXM_DEPTH_FUNC_LESS_EQUAL : SCE_GXM_DEPTH_FUNC_ALWAYS;
 	sceGxmSetFrontDepthFunc(gxm_context, func);
 	sceGxmSetBackDepthFunc(gxm_context,  func);
-}
-
-void Gfx_SetDepthWrite(cc_bool enabled) {
-	depth_write = enabled;
-	UpdateDepthWrite();
-}
-
-void Gfx_SetDepthTest(cc_bool enabled) {
-	depth_test = enabled;
-	UpdateDepthWrite();
-	UpdateDepthFunction();
 }
 
 
@@ -1019,8 +1024,8 @@ void Gfx_SetDepthTest(cc_bool enabled) {
 static struct Matrix _view, _proj;
 
 void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
-	if (type == MATRIX_VIEW)       _view = *matrix;
-	if (type == MATRIX_PROJECTION) _proj = *matrix;
+	if (type == MATRIX_VIEW) _view = *matrix;
+	if (type == MATRIX_PROJ) _proj = *matrix;
 
 	struct Matrix mvp __attribute__((aligned(64)));	
 	Matrix_Mul(&mvp, &_view, &_proj);
@@ -1039,8 +1044,10 @@ void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
 	VP_ReloadUniforms();
 }
 
-void Gfx_LoadIdentityMatrix(MatrixType type) { 
-	Gfx_LoadMatrix(type, &Matrix_Identity);
+void Gfx_LoadMVP(const struct Matrix* view, const struct Matrix* proj, struct Matrix* mvp) {
+	Gfx_LoadMatrix(MATRIX_VIEW, view);
+	Gfx_LoadMatrix(MATRIX_PROJ, proj);
+	Matrix_Mul(mvp, view, proj);
 }
 
 void Gfx_EnableTextureOffset(float x, float y) {
@@ -1057,6 +1064,7 @@ void Gfx_DisableTextureOffset(void) {
 *---------------------------------------------------------Drawing---------------------------------------------------------*
 *#########################################################################################################################*/
 cc_bool Gfx_WarnIfNecessary(void) { return false; }
+cc_bool Gfx_GetUIOptions(struct MenuOptionsScreen* s) { return false; }
 
 void Gfx_SetVertexFormat(VertexFormat fmt) {
 	if (fmt == gfx_format) return;
@@ -1093,7 +1101,8 @@ void Gfx_DrawIndexedTris_T2fC4b(int verticesCount, int startVertex) {
 }
 
 
-void Gfx_Clear(void) {
+void Gfx_ClearBuffers(GfxBuffers buffers) {
+	// TODO clear only some buffers
 	static struct GPUBuffer* clearVB;
 	if (!clearVB) {
 		clearVB = GPUBuffer_Alloc(4 * sizeof(struct VertexColoured));
@@ -1106,15 +1115,14 @@ void Gfx_Clear(void) {
 	clear_vertices[3] = (struct VertexColoured){-1.0f,  1.0f, 1.0f, clear_color };
 	
 	Gfx_SetAlphaTest(false);
-	// can't use Gfx_SetDepthTest because that also affects depth writing
-	depth_test = false; UpdateDepthFunction();
+	Gfx_SetDepthTest(false);
 	
 	Gfx_SetVertexFormat(VERTEX_FORMAT_COLOURED);
-	Gfx_LoadIdentityMatrix(MATRIX_VIEW);
-	Gfx_LoadIdentityMatrix(MATRIX_PROJECTION);
+	Gfx_LoadMatrix(MATRIX_VIEW, &Matrix_Identity);
+	Gfx_LoadMatrix(MATRIX_PROJ, &Matrix_Identity);
 	Gfx_BindVb(clearVB);
 	Gfx_DrawVb_IndexedTris(4);
 	
-	depth_test = true; UpdateDepthFunction();
+	Gfx_SetDepthTest(true);
 }
 #endif

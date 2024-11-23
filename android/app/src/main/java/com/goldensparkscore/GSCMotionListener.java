@@ -6,7 +6,7 @@ import android.view.View;
 public class GSCMotionListener implements View.OnGenericMotionListener {
     MainActivity activity;
 
-    public GSCMotionListener(MainActivity activity) {
+    public CCMotionListener(MainActivity activity) {
         this.activity = activity;
     }
 

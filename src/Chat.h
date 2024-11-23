@@ -1,6 +1,8 @@
 #ifndef CC_CHAT_H
 #define CC_CHAT_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* Manages sending, adding, logging and handling chat.
    Copyright 2014-2023 ClassiCube | Licensed under BSD-3
 */
@@ -40,29 +42,10 @@ extern cc_string Chat_Status[5], Chat_BottomRight[3], Chat_ClientStatus[2];
 extern cc_string Chat_Announcement, Chat_BigAnnouncement, Chat_SmallAnnouncement;
 /* All chat messages received */
 extern struct StringsBuffer Chat_Log;
-/* All chat entered by the user */
+/* All chat input entered by the user */
 extern struct StringsBuffer Chat_InputLog;
 /* Whether chat messages are logged to disc */
 extern cc_bool Chat_Logging;
-
-/* This command is only available in singleplayer */
-#define COMMAND_FLAG_SINGLEPLAYER_ONLY 0x01
-/* args is passed as a single string instead of being split by spaces */
-#define COMMAND_FLAG_UNSPLIT_ARGS 0x02
-
-struct ChatCommand;
-/* Represents a client-side command/action. */
-struct ChatCommand {
-	const char* name;         /* Full name of this command */
-	/* Function pointer for the actual action the command performs */
-	void (*Execute)(const cc_string* args, int argsCount);
-	cc_uint8 flags;           /* Flags for handling this command (see COMMAND_FLAG defines) */
-	const char* help[5];      /* Messages to show when a player uses /help on this command */
-	struct ChatCommand* next; /* Next command in linked-list of client commands */
-};
-/* Registers a client-side command, allowing it to be used with /client [cmd name] */
-CC_API  void Commands_Register(      struct ChatCommand* cmd);
-typedef void (*FP_Commands_Register)(struct ChatCommand* cmd);
 
 /* Sets the name of log file (no .txt, so e.g. just "singleplayer") */
 /* NOTE: This can only be set once. */
@@ -86,8 +69,10 @@ typedef void (*FP_Chat_AddOf)(const cc_string* text, int msgType);
 /* Shorthand for Chat_AddOf(String_FromReadonly(raw), MSG_TYPE_NORMAL) */
 void Chat_AddRaw(const char* raw);
 
-void Chat_Add1(const char* format, const void* a1);
-void Chat_Add2(const char* format, const void* a1, const void* a2);
-void Chat_Add3(const char* format, const void* a1, const void* a2, const void* a3);
-void Chat_Add4(const char* format, const void* a1, const void* a2, const void* a3, const void* a4);
+CC_API void Chat_Add1(const char* format, const void* a1);
+CC_API void Chat_Add2(const char* format, const void* a1, const void* a2);
+CC_API void Chat_Add3(const char* format, const void* a1, const void* a2, const void* a3);
+CC_API void Chat_Add4(const char* format, const void* a1, const void* a2, const void* a3, const void* a4);
+
+CC_END_HEADER
 #endif

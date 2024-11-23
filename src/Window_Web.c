@@ -7,6 +7,7 @@
 #include "ExtMath.h"
 #include "Bitmap.h"
 #include "Errors.h"
+#include "Gui.h"
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 #include <emscripten/key_codes.h>
@@ -23,10 +24,10 @@ static int GetScreenHeight(void) { return RawDpiScale(interop_ScreenHeight()); }
 static void UpdateWindowBounds(void) {
 	int width  = interop_CanvasWidth();
 	int height = interop_CanvasHeight();
-	if (width == WindowInfo.Width && height == WindowInfo.Height) return;
+	if (width == Window_Main.Width && height == Window_Main.Height) return;
 
-	WindowInfo.Width  = width;
-	WindowInfo.Height = height;
+	Window_Main.Width  = width;
+	Window_Main.Height = height;
 	Event_RaiseVoid(&WindowEvents.Resized);
 }
 
@@ -48,7 +49,8 @@ static void DeferredEnableRawMouse(void) {
 
 static EM_BOOL OnMouseWheel(int type, const EmscriptenWheelEvent* ev, void* data) {
 	/* TODO: The scale factor isn't standardised.. is there a better way though? */
-	Mouse_ScrollWheel(-Math_Sign(ev->deltaY));
+	Mouse_ScrollHWheel(-Math_Sign(ev->deltaX));
+	Mouse_ScrollVWheel(-Math_Sign(ev->deltaY));
 	DeferredEnableRawMouse();
 	return true;
 }
@@ -74,8 +76,8 @@ static void RescaleXY(int* x, int* y) {
 	emscripten_get_element_css_size("#canvas", &css_width, &css_height);
 
 	if (css_width && css_height) {
-		*x = (int)(*x * WindowInfo.Width  / css_width );
-		*y = (int)(*y * WindowInfo.Height / css_height);
+		*x = (int)(*x * Window_Main.Width  / css_width );
+		*y = (int)(*y * Window_Main.Height / css_height);
 	} else {
 		/* If css width or height is 0, something is bogus    */
 		/* Better to avoid divsision by 0 in that case though */
@@ -105,8 +107,8 @@ static EM_BOOL OnTouchStart(int type, const EmscriptenTouchEvent* ev, void* data
 	/* Because we return true to cancel default browser behaviour, sometimes we also */
 	/*   end up preventing the default 'focus gained' behaviour from occurring */
 	/* So manually activate focus as a workaround */
-	if (!WindowInfo.Focused) {
-		WindowInfo.Focused = true;
+	if (!Window_Main.Focused) {
+		Window_Main.Focused = true;
 		Event_RaiseVoid(&WindowEvents.FocusChanged);
 	}
 
@@ -157,7 +159,7 @@ static EM_BOOL OnTouchEnd(int type, const EmscriptenTouchEvent* ev, void* data) 
 }
 
 static EM_BOOL OnFocus(int type, const EmscriptenFocusEvent* ev, void* data) {
-	WindowInfo.Focused = type == EMSCRIPTEN_EVENT_FOCUS;
+	Window_Main.Focused = type == EMSCRIPTEN_EVENT_FOCUS;
 	Event_RaiseVoid(&WindowEvents.FocusChanged);
 	return true;
 }
@@ -183,15 +185,15 @@ static const char* OnBeforeUnload(int type, const void* ev, void *data) {
 		emscripten_exit_pointerlock();
 		return "You have unsaved changes. Are you sure you want to quit?";
 	}
-	Window_Close();
+	Window_RequestClose();
 	return NULL;
 }
 
 static EM_BOOL OnVisibilityChanged(int eventType, const EmscriptenVisibilityChangeEvent* ev, void* data) {
 	cc_bool inactive = ev->visibilityState == EMSCRIPTEN_VISIBILITY_HIDDEN;
-	if (WindowInfo.Inactive == inactive) return false;
+	if (Window_Main.Inactive == inactive) return false;
 
-	WindowInfo.Inactive = inactive;
+	Window_Main.Inactive = inactive;
 	Event_RaiseVoid(&WindowEvents.InactiveChanged);
 	return false;
 }
@@ -246,12 +248,26 @@ static int MapNativeKey(int k, int l) {
 	case DOM_VK_BACK_SLASH:    return CCKEY_BACKSLASH;
 	case DOM_VK_CLOSE_BRACKET: return CCKEY_RBRACKET;
 	case DOM_VK_QUOTE:         return CCKEY_QUOTE;
+	
+	case DOM_VK_VOLUME_MUTE: return CCKEY_VOLUME_MUTE;
+	case DOM_VK_VOLUME_DOWN: return CCKEY_VOLUME_DOWN;
+	case DOM_VK_VOLUME_UP:   return CCKEY_VOLUME_UP;
 
-	/* chrome */
+	/* Chrome specific keys */
+	/*case 173: return CCKEY_VOLUME_MUTE; same as DOM_VK_HYPHEN_MINUS */
+	case 174: return CCKEY_VOLUME_DOWN;
+	case 175: return CCKEY_VOLUME_UP;
+	case 176: return CCKEY_MEDIA_NEXT;
+	case 177: return CCKEY_MEDIA_PREV;
+	case 178: return CCKEY_MEDIA_STOP;
+	case 179: return CCKEY_MEDIA_PLAY;
+	
 	case 186: return CCKEY_SEMICOLON;
 	case 187: return CCKEY_EQUALS;
 	case 189: return CCKEY_MINUS;
 	}
+	
+	Platform_Log1("Unknown key: %i", &k);
 	return INPUT_NONE;
 }
 
@@ -367,10 +383,13 @@ extern void interop_AddClipboardListeners(void);
 extern void interop_ForceTouchPageLayout(void);
 
 extern void Game_DoFrame(void);
+void Window_PreInit(void) {
+	emscripten_set_main_loop(Game_DoFrame, 0, false);
+	DisplayInfo.CursorVisible = true;
+}
+
 void Window_Init(void) {
 	int is_ios, droid;
-	emscripten_set_main_loop(Game_DoFrame, 0, false);
-
 	DisplayInfo.Width  = GetScreenWidth();
 	DisplayInfo.Height = GetScreenHeight();
 	DisplayInfo.Depth  = 24;
@@ -382,30 +401,46 @@ void Window_Init(void) {
 	droid  = interop_IsAndroid();
 	is_ios = interop_IsIOS();
 	Input_SetTouchMode(is_ios || droid);
+	Gui_SetTouchUI(is_ios || droid);
 
 	/* iOS shifts the whole webpage up when opening chat, which causes problems */
 	/*  as the chat/send butons are positioned at the top of the canvas - they */
 	/*  get pushed offscreen and can't be used at all anymore. So handle this */
 	/*  case specially by positioning them at the bottom instead for iOS. */
-	WindowInfo.SoftKeyboard = is_ios ? SOFT_KEYBOARD_SHIFT : SOFT_KEYBOARD_RESIZE;
+	Window_Main.SoftKeyboard = is_ios ? SOFT_KEYBOARD_SHIFT : SOFT_KEYBOARD_RESIZE;
 
 	/* Let the webpage know it needs to force a mobile layout */
 	if (!Input_TouchMode) return;
 	interop_ForceTouchPageLayout();
 }
 
+void Window_Free(void) {
+	/* If the game is closed while in fullscreen, the last rendered frame stays */
+	/*  shown in fullscreen, but the game can't be interacted with anymore */
+	Window_ExitFullscreen();
+
+	Window_SetSize(0, 0);
+	UnhookEvents();
+	emscripten_cancel_main_loop();
+}
+
 extern void interop_InitContainer(void);
 static void DoCreateWindow(void) {
-	WindowInfo.Exists  = true;
-	WindowInfo.Focused = true;
+	Window_Main.Exists   = true;
+	Window_Main.Focused  = true;
+	Window_Main.UIScaleX = DEFAULT_UI_SCALE_X;
+	Window_Main.UIScaleY = DEFAULT_UI_SCALE_Y;
+	
 	HookEvents();
 	/* Let the webpage decide on initial bounds */
-	WindowInfo.Width  = interop_CanvasWidth();
-	WindowInfo.Height = interop_CanvasHeight();
+	Window_Main.Width  = interop_CanvasWidth();
+	Window_Main.Height = interop_CanvasHeight();
 	interop_InitContainer();
 }
 void Window_Create2D(int width, int height) { DoCreateWindow(); }
 void Window_Create3D(int width, int height) { DoCreateWindow(); }
+
+void Window_Destroy(void) { }
 
 extern void interop_SetPageTitle(const char* title);
 void Window_SetTitle(const cc_string* title) {
@@ -417,7 +452,7 @@ void Window_SetTitle(const cc_string* title) {
 static char pasteBuffer[512];
 static cc_string pasteStr;
 EMSCRIPTEN_KEEPALIVE void Window_RequestClipboardText(void) {
-	Event_RaiseInput(&InputEvents.Down, INPUT_CLIPBOARD_COPY, 0);
+	Event_RaiseInput(&InputEvents.Down2, INPUT_CLIPBOARD_COPY, 0, &NormDevice);
 }
 
 EMSCRIPTEN_KEEPALIVE void Window_StoreClipboardText(char* src) {
@@ -427,7 +462,7 @@ EMSCRIPTEN_KEEPALIVE void Window_StoreClipboardText(char* src) {
 
 EMSCRIPTEN_KEEPALIVE void Window_GotClipboardText(char* src) {
 	Window_StoreClipboardText(src);
-	Event_RaiseInput(&InputEvents.Down, INPUT_CLIPBOARD_PASTE, 0);
+	Event_RaiseInput(&InputEvents.Down2, INPUT_CLIPBOARD_PASTE, 0, &NormDevice);
 }
 
 extern void interop_TryGetClipboardText(void);
@@ -498,23 +533,14 @@ void Window_SetSize(int width, int height) {
 	UpdateWindowBounds();
 }
 
-void Window_Close(void) {
-	WindowInfo.Exists = false;
+void Window_RequestClose(void) {
+	Window_Main.Exists = false;
 	Event_RaiseVoid(&WindowEvents.Closing);
-	/* If the game is closed while in fullscreen, the last rendered frame stays */
-	/*  shown in fullscreen, but the game can't be interacted with anymore */
-	Window_ExitFullscreen();
-
-	Window_SetSize(0, 0);
-	UnhookEvents();
-	/* Game_DoFrame doesn't do anything when WindowExists.False is false, */
-	/*  but it's still better to cancel main loop to minimise resource usage */
-	emscripten_cancel_main_loop();
 }
 
 extern void interop_RequestCanvasResize(void);
 static void ProcessPendingResize(void) {
-	if (!WindowInfo.Exists) return;
+	if (!Window_Main.Exists) return;
 
 	if (Window_GetWindowState() == WINDOW_STATE_FULLSCREEN) {
 		SetFullscreenBounds();
@@ -525,81 +551,7 @@ static void ProcessPendingResize(void) {
 	UpdateWindowBounds();
 }
 
-/* https://www.w3.org/TR/gamepad/#dfn-standard-gamepad */
-#define GetGamepadButton(i) i < numButtons ? ev->digitalButton[i] : 0
-static void ProcessGamepadButtons(EmscriptenGamepadEvent* ev) {
-	int numButtons = ev->numButtons;
-
-	Input_SetNonRepeatable(CCPAD_A, GetGamepadButton(0));
-	Input_SetNonRepeatable(CCPAD_B, GetGamepadButton(1));
-	Input_SetNonRepeatable(CCPAD_X, GetGamepadButton(2));
-	Input_SetNonRepeatable(CCPAD_Y, GetGamepadButton(3));
-
-	Input_SetNonRepeatable(CCPAD_L,  GetGamepadButton(4));
-	Input_SetNonRepeatable(CCPAD_R,  GetGamepadButton(5));
-	Input_SetNonRepeatable(CCPAD_ZL, GetGamepadButton(6));
-	Input_SetNonRepeatable(CCPAD_ZR, GetGamepadButton(7));
-
-	Input_SetNonRepeatable(CCPAD_SELECT, GetGamepadButton( 8));
-	Input_SetNonRepeatable(CCPAD_START,  GetGamepadButton( 9));
-	Input_SetNonRepeatable(CCPAD_LSTICK, GetGamepadButton(10));
-	Input_SetNonRepeatable(CCPAD_RSTICK, GetGamepadButton(11));
-	
-	Input_SetNonRepeatable(CCPAD_UP,    GetGamepadButton(12));
-	Input_SetNonRepeatable(CCPAD_DOWN,  GetGamepadButton(13));
-	Input_SetNonRepeatable(CCPAD_LEFT,  GetGamepadButton(14));
-	Input_SetNonRepeatable(CCPAD_RIGHT, GetGamepadButton(15));
-}
-
-static void ProcessGamepadCamera(float x, float y, double delta) {
-	float scale = (delta * 60.0) * 8.0f;
-
-	/* Deadzone adjustment */
-	if (x >= -0.1 && x <= 0.1) x = 0;
-	if (y >= -0.1 && y <= 0.1) y = 0;
-	if (x == 0 && y == 0) return;
-
-	Event_RaiseRawMove(&PointerEvents.RawMoved, x * scale, y * scale);
-}
-
-static void ProcessGamepadMovement(float x, float y) {
-	/* Deadzone adjustment */
-	if (x >= -0.1 && x <= 0.1) x = 0;
-	if (y >= -0.1 && y <= 0.1) y = 0;
-	if (x == 0 && y == 0) return;
-
-	Input.JoystickMovement = true;
-	Input.JoystickAngle    = Math_Atan2(x, y);
-}
-
-static void ProcessGamepadInput(EmscriptenGamepadEvent* ev, double delta) {
-	Input.Sources |= INPUT_SOURCE_GAMEPAD;
-	Input.JoystickMovement = false;
-	ProcessGamepadButtons(ev);
-
-	if (ev->numAxes >= 4) {
-		ProcessGamepadMovement(ev->axis[0], ev->axis[1]);
-		ProcessGamepadCamera(  ev->axis[2], ev->axis[3], delta);
-	} else if (ev->numAxes >= 2) {
-		ProcessGamepadCamera(ev->axis[0], ev->axis[1], delta);
-	}
-}
-
-void Window_ProcessEvents(double delta) {
-	int i, res, count;
-	Input.Sources = INPUT_SOURCE_NORMAL;
-
-	if (emscripten_sample_gamepad_data() == 0) {
-		count = emscripten_get_num_gamepads();
-
-		for (i = 0; i < count; i++)
-		{
-			EmscriptenGamepadEvent ev;
-			res = emscripten_get_gamepad_status(i, &ev);
-			if (res == 0) ProcessGamepadInput(&ev, delta);
-		}	
-	}
-
+void Window_ProcessEvents(float delta) {
 	if (!needResize) return;
 	needResize = false;
 	ProcessPendingResize();
@@ -615,6 +567,81 @@ static void Cursor_DoSetVisible(cc_bool visible) {
 	interop_SetCursorVisible(visible);
 }
 
+
+/*########################################################################################################################*
+*-------------------------------------------------------Gamepads----------------------------------------------------------*
+*#########################################################################################################################*/
+void Gamepads_Init(void) { }
+
+/* https://www.w3.org/TR/gamepad/#dfn-standard-gamepad */
+#define GetGamepadButton(i) i < numButtons ? ev->digitalButton[i] : 0
+static void ProcessGamepadButtons(int port, EmscriptenGamepadEvent* ev) {
+	int numButtons = ev->numButtons;
+
+	Gamepad_SetButton(port, CCPAD_1, GetGamepadButton(0));
+	Gamepad_SetButton(port, CCPAD_2, GetGamepadButton(1));
+	Gamepad_SetButton(port, CCPAD_3, GetGamepadButton(2));
+	Gamepad_SetButton(port, CCPAD_4, GetGamepadButton(3));
+
+	Gamepad_SetButton(port, CCPAD_ZL, GetGamepadButton(4));
+	Gamepad_SetButton(port, CCPAD_ZR, GetGamepadButton(5));
+	Gamepad_SetButton(port, CCPAD_L,  GetGamepadButton(6));
+	Gamepad_SetButton(port, CCPAD_R,  GetGamepadButton(7));
+
+	Gamepad_SetButton(port, CCPAD_SELECT, GetGamepadButton( 8));
+	Gamepad_SetButton(port, CCPAD_START,  GetGamepadButton( 9));
+	Gamepad_SetButton(port, CCPAD_LSTICK, GetGamepadButton(10));
+	Gamepad_SetButton(port, CCPAD_RSTICK, GetGamepadButton(11));
+	
+	Gamepad_SetButton(port, CCPAD_UP,    GetGamepadButton(12));
+	Gamepad_SetButton(port, CCPAD_DOWN,  GetGamepadButton(13));
+	Gamepad_SetButton(port, CCPAD_LEFT,  GetGamepadButton(14));
+	Gamepad_SetButton(port, CCPAD_RIGHT, GetGamepadButton(15));
+}
+
+#define AXIS_SCALE 8.0f
+static void ProcessGamepadAxis(int port, int axis, float x, float y, float delta) {
+	/* Deadzone adjustment */
+	if (x >= -0.1 && x <= 0.1) x = 0;
+	if (y >= -0.1 && y <= 0.1) y = 0;
+
+	Gamepad_SetAxis(port, axis, x * AXIS_SCALE, y * AXIS_SCALE, delta);
+}
+
+static void ProcessGamepadInput(int port, EmscriptenGamepadEvent* ev, float delta) {
+	Input.Sources |= INPUT_SOURCE_GAMEPAD;
+	ProcessGamepadButtons(port, ev);
+
+	if (ev->numAxes >= 4) {
+		ProcessGamepadAxis(port, PAD_AXIS_LEFT,  ev->axis[0], ev->axis[1], delta);
+		ProcessGamepadAxis(port, PAD_AXIS_RIGHT, ev->axis[2], ev->axis[3], delta);
+	} else if (ev->numAxes >= 2) {
+		ProcessGamepadAxis(port, PAD_AXIS_RIGHT, ev->axis[0], ev->axis[1], delta);
+	}
+}
+
+void Gamepads_Process(float delta) {
+	int i, port, res, count;
+	Input.Sources = INPUT_SOURCE_NORMAL;
+
+	if (emscripten_sample_gamepad_data() != 0) return;
+	count = emscripten_get_num_gamepads();
+
+	for (i = 0; i < count; i++)
+	{
+		EmscriptenGamepadEvent ev;
+		res = emscripten_get_gamepad_status(i, &ev);
+		if (res != 0) continue;
+		
+		port = Gamepad_Connect(0xEB + i, PadBind_Defaults);
+		ProcessGamepadInput(port, &ev, delta);
+	}
+}
+
+
+/*########################################################################################################################*
+*-------------------------------------------------------Misc/Other--------------------------------------------------------*
+*#########################################################################################################################*/
 extern void interop_ShowDialog(const char* title, const char* msg);
 static void ShowDialogCore(const char* title, const char* msg) { 
 	interop_ShowDialog(title, msg); 
@@ -666,8 +693,8 @@ cc_result Window_SaveFileDialog(const struct SaveFileDialogArgs* args) {
 	return interop_DownloadFile(fileBuffer, args->filters, args->titles);
 }
 
-void Window_AllocFramebuffer(struct Bitmap* bmp) { }
-void Window_DrawFramebuffer(Rect2D r)     { }
+void Window_AllocFramebuffer(struct Bitmap* bmp, int width, int height) { }
+void Window_DrawFramebuffer(Rect2D r, struct Bitmap* bmp) { }
 void Window_FreeFramebuffer(struct Bitmap* bmp)  { }
 
 extern void interop_OpenKeyboard(const char* text, int type, const char* placeholder);
@@ -682,7 +709,7 @@ EMSCRIPTEN_KEEPALIVE void Window_OnTextChanged(const char* src) {
 	Event_RaiseString(&InputEvents.TextChanged, &str);
 }
 
-void Window_OpenKeyboard(struct OpenKeyboardArgs* args) {
+void OnscreenKeyboard_Open(struct OpenKeyboardArgs* args) {
 	char str[NATIVE_STR_LEN];
 	keyboardOpen = true;
 	if (!Input_TouchMode) return;
@@ -693,7 +720,7 @@ void Window_OpenKeyboard(struct OpenKeyboardArgs* args) {
 	args->opaque = true;
 }
 
-void Window_SetKeyboardText(const cc_string* text) {
+void OnscreenKeyboard_SetText(const cc_string* text) {
 	char str[NATIVE_STR_LEN];
 	if (!Input_TouchMode) return;
 
@@ -701,7 +728,7 @@ void Window_SetKeyboardText(const cc_string* text) {
 	interop_SetKeyboardText(str);
 }
 
-void Window_CloseKeyboard(void) {
+void OnscreenKeyboard_Close(void) {
 	keyboardOpen = false;
 	if (!Input_TouchMode) return;
 	interop_CloseKeyboard();
@@ -724,7 +751,7 @@ void Window_DisableRawMouse(void) {
 /*########################################################################################################################*
 *------------------------------------------------Emscripten WebGL context-------------------------------------------------*
 *#########################################################################################################################*/
-#ifdef CC_BUILD_GL
+#if CC_GFX_BACKEND_IS_GL()
 #include "Graphics.h"
 static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx_handle;
 
@@ -742,7 +769,10 @@ void GLContext_Create(void) {
 	attribs.antialias = false;
 
 	ctx_handle = emscripten_webgl_create_context("#canvas", &attribs);
-	if (!ctx_handle) Window_ShowDialog("WebGL unsupported", "WebGL is required to run ClassiCube");
+	if (!ctx_handle) {
+		Window_ShowDialog("WebGL unsupported", "WebGL is required to run ClassiCube");
+		Process_Exit(0x57474C20);
+	}
 
 	emscripten_webgl_make_context_current(ctx_handle);
 	emscripten_set_webglcontextlost_callback("#canvas", NULL, 0, GLContext_OnLost);
@@ -763,11 +793,15 @@ void GLContext_Free(void) {
 void* GLContext_GetAddress(const char* function) { return NULL; }
 cc_bool GLContext_SwapBuffers(void) { return true; /* Browser implicitly does this */ }
 
-void GLContext_SetFpsLimit(cc_bool vsync, float minFrameMs) {
+void Window_SetMinFrameTime(float timeMS) {
+	emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, (int)timeMS);
+}
+
+void GLContext_SetVSync(cc_bool vsync) {
 	if (vsync) {
 		emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
 	} else {
-		emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, (int)minFrameMs);
+		emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, 1000 / 60);
 	}
 }
 

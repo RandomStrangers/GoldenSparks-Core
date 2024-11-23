@@ -1,11 +1,12 @@
 #include "SSL.h"
 #include "Errors.h"
 
-#if defined CC_BUILD_SCHANNEL
+#if CC_SSL_BACKEND == CC_SSL_BACKEND_SCHANNEL
 #define WIN32_LEAN_AND_MEAN
 #define NOSERVICE
 #define NOMCX
 #define NOIME
+#define NOMINMAX
 #include <windows.h>
 #define SECURITY_WIN32
 #include <sspi.h>
@@ -104,21 +105,6 @@ static SECURITY_STATUS SSL_CreateHandle(struct SSLContext* ctx) {
 						&cred, NULL, NULL, &ctx->handle, NULL);
 }
 
-static cc_result SSL_SendRaw(cc_socket socket, const cc_uint8* data, cc_uint32 count) {
-	cc_uint32 sent;
-	cc_result res;
-
-	while (count)
-	{
-		if ((res = Socket_Write(socket, data, count, &sent))) return res;
-		if (!sent) return ERR_END_OF_STREAM;
-
-		data  += sent;
-		count -= sent;
-	}
-	return 0;
-}
-
 static cc_result SSL_RecvRaw(struct SSLContext* ctx) {
 	cc_uint32 read;
 	cc_result res;
@@ -152,14 +138,14 @@ static SECURITY_STATUS SSL_Connect(struct SSLContext* ctx, const char* hostname)
 	out_desc.cBuffers  = Array_Elems(out_buffers);
 	out_desc.pBuffers  = out_buffers;
 
-	res = FP_InitializeSecurityContextA(&ctx->handle, NULL, hostname, flags, 0, 0,
+	res = FP_InitializeSecurityContextA(&ctx->handle, NULL, (char*)hostname, flags, 0, 0,
 						NULL, 0, &ctx->context, &out_desc, &flags, NULL);
 	if (res != SEC_I_CONTINUE_NEEDED) return res;
 	res = 0;
 
 	/* Send initial handshake to the server (if there is one) */
 	if (out_buffers[0].pvBuffer) {
-		res = SSL_SendRaw(ctx->socket, out_buffers[0].pvBuffer, out_buffers[0].cbBuffer);
+		res = Socket_WriteAll(ctx->socket, out_buffers[0].pvBuffer, out_buffers[0].cbBuffer);
 		FP_FreeContextBuffer(out_buffers[0].pvBuffer);
 	}
 	return res;
@@ -208,7 +194,7 @@ static SECURITY_STATUS SSL_Negotiate(struct SSLContext* ctx) {
 			/* SChannel didn't process the entirety of the input buffer */
 			/*  So move the leftover data back to the front of the input buffer */
 			leftover_len = in_buffers[1].cbBuffer;
-			memmove(ctx->incoming, ctx->incoming + (ctx->bufferLen - leftover_len), leftover_len);
+			Mem_Move(ctx->incoming, ctx->incoming + (ctx->bufferLen - leftover_len), leftover_len);
 			ctx->bufferLen = leftover_len;
 		} else if (sec != SEC_E_INCOMPLETE_MESSAGE) {
 			/* SChannel processed entirely of input buffer */
@@ -220,7 +206,7 @@ static SECURITY_STATUS SSL_Negotiate(struct SSLContext* ctx) {
 
 		/* Need to send data to the server */
 		if (sec == SEC_I_CONTINUE_NEEDED) {
-			res = SSL_SendRaw(ctx->socket, out_buffers[0].pvBuffer, out_buffers[0].cbBuffer);
+			res = Socket_WriteAll(ctx->socket, out_buffers[0].pvBuffer, out_buffers[0].cbBuffer);
 			FP_FreeContextBuffer(out_buffers[0].pvBuffer); /* TODO always free? */
 
 			if (res) return res;
@@ -293,7 +279,7 @@ static cc_result SSL_ReadDecrypted(struct SSLContext* ctx, cc_uint8* data, cc_ui
 		/* incoming buffer stores decrypted data and then any leftover ciphertext */
 		/*  So move the leftover ciphertext back to the start of the input buffer */
 		/* TODO: Share function with handshake function */
-		memmove(ctx->incoming, ctx->incoming + (ctx->bufferLen - ctx->leftover), ctx->leftover);
+		Mem_Move(ctx->incoming, ctx->incoming + (ctx->bufferLen - ctx->leftover), ctx->leftover);
 		ctx->bufferLen = ctx->leftover;
 		ctx->leftover  = 0;
 
@@ -347,6 +333,9 @@ cc_result SSL_Read(void* ctx_, cc_uint8* data, cc_uint32 count, cc_uint32* read)
 
 				return SSL_ReadDecrypted(ctx, data, count, read);
 			}
+
+			/* TODO properly close the connection with TLS shutdown when this happens */
+			if (sec == SEC_I_CONTEXT_EXPIRED) return SSL_ERR_CONTEXT_DEAD;
 			
 			if (sec != SEC_E_INCOMPLETE_MESSAGE) return sec;
 			/* SEC_E_INCOMPLETE_MESSAGE case - still need to read more data from the server first */
@@ -388,13 +377,12 @@ static cc_result SSL_WriteChunk(struct SSLContext* s, const cc_uint8* data, cc_u
 	/* NOTE: Okay to write in one go, since all three buffers will be contiguous */
 	/*  (as TLS record header size will always be the same size) */
 	total = buffers[0].cbBuffer + buffers[1].cbBuffer + buffers[2].cbBuffer;
-	return SSL_SendRaw(s->socket, buffer, total);
+	return Socket_WriteAll(s->socket, buffer, total);
 }
 
-cc_result SSL_Write(void* ctx, const cc_uint8* data, cc_uint32 count, cc_uint32* wrote) {
+cc_result SSL_WriteAll(void* ctx, const cc_uint8* data, cc_uint32 count) {
 	struct SSLContext* s = ctx;
 	cc_result res;
-	*wrote = 0;
 
 	/* TODO: Don't loop here? move to HTTPConnection instead?? */
 	while (count)
@@ -402,7 +390,6 @@ cc_result SSL_Write(void* ctx, const cc_uint8* data, cc_uint32 count, cc_uint32*
 		int len = min(count, s->sizes.cbMaximumMessage);
 		if ((res = SSL_WriteChunk(s, data, len))) return res;
 
-		*wrote += len;
 		data   += len;
 		count  -= len;
 	}
@@ -417,12 +404,19 @@ cc_result SSL_Free(void* ctx_) {
 	Mem_Free(ctx);
 	return 0; 
 }
-#elif defined CC_BUILD_BEARSSL
+#elif CC_SSL_BACKEND == CC_SSL_BACKEND_BEARSSL
 #include "String.h"
 #include "bearssl.h"
-#include "../misc/certs.h"
+#include "../misc/certs/certs.h"
 // https://github.com/unkaktus/bearssl/blob/master/samples/client_basic.c#L283
 #define SSL_ERROR_SHIFT 0xB5510000
+
+static unsigned fake_minimal_end_chain(const br_x509_class** ctx) {
+	unsigned r = br_x509_minimal_vtable.end_chain(ctx);
+	if (r == BR_ERR_X509_NOT_TRUSTED) r = 0;
+	if (r == BR_ERR_X509_EXPIRED)     r = 0;
+	return r;
+}
 
 typedef struct SSLContext {
 	br_ssl_client_context sc;
@@ -472,9 +466,13 @@ static void InjectEntropy(SSLContext* ctx) {
 #endif
 
 static void SetCurrentTime(SSLContext* ctx) {
-	cc_uint64 cur = DateTime_CurrentUTC_MS() / 1000;
+	cc_uint64 cur = DateTime_CurrentUTC();
 	uint32_t days = (uint32_t)(cur / 86400) + 366;
 	uint32_t secs = (uint32_t)(cur % 86400);
+	
+	/* clamp min system time from RTC to start of August 2024 */
+	/* Times earlier than that usually mean an improperly calibrated RTC */
+	if (days < 739464) days = 739464;
 		
 	br_x509_minimal_set_time(&ctx->xc, days, secs);
 	/* This matches bearssl's default time calculation
@@ -512,16 +510,25 @@ cc_result SSL_Init(cc_socket socket, const cc_string* host_, void** out_ctx) {
 	*out_ctx = (void*)ctx;
 	
 	br_ssl_client_init_full(&ctx->sc, &ctx->xc, TAs, TAs_NUM);
-	/*if (!_verify_certs) {
-		br_x509_minimal_set_rsa(&ctx->xc,   &br_rsa_i31_pkcs1_vrfy);
-		br_x509_minimal_set_ecdsa(&ctx->xc, &br_ec_prime_i31, &br_ecdsa_i31_vrfy_asn1);
-	}*/
 	InjectEntropy(ctx);
 	SetCurrentTime(ctx);
 	ctx->socket = socket;
 
 	br_ssl_engine_set_buffer(&ctx->sc.eng, ctx->iobuf, sizeof(ctx->iobuf), 1);
 	br_ssl_client_reset(&ctx->sc, host, 0);
+	
+	/* Account login must be done over TLS 1.2 */
+	if (String_CaselessEqualsConst(host_, "www.classicube.net")) {
+		br_ssl_engine_set_versions(&ctx->sc.eng, BR_TLS12, BR_TLS12);
+	}
+	
+	/* Override default certificate chain validation */
+	if (!_verifyCerts) {
+		static br_x509_class fake_minimal_vtable;
+		fake_minimal_vtable = br_x509_minimal_vtable;
+		fake_minimal_vtable.end_chain = fake_minimal_end_chain;
+		ctx->xc.vtable = &fake_minimal_vtable;
+	}
 	
 	br_sslio_init(&ctx->ioc, &ctx->sc.eng, 
 			sock_read,  ctx, 
@@ -537,10 +544,16 @@ cc_result SSL_Read(void* ctx_, cc_uint8* data, cc_uint32 count, cc_uint32* read)
 	SSLContext* ctx = (SSLContext*)ctx_;
 	// TODO: just br_sslio_write ??
 	int res = br_sslio_read(&ctx->ioc, data, count);
+	int err;
 	
 	if (res < 0) {
 		if (ctx->readError) return ctx->readError;
-		return SSL_ERROR_SHIFT + br_ssl_engine_last_error(&ctx->sc.eng);
+		
+		// TODO session resumption, proper connection closing ??
+		err = br_ssl_engine_last_error(&ctx->sc.eng);
+		if (err == 0 && br_ssl_engine_current_state(&ctx->sc.eng) == BR_SSL_CLOSED)
+			return SSL_ERR_CONTEXT_DEAD;
+		return SSL_ERROR_SHIFT + err;
 	}
 	
 	br_sslio_flush(&ctx->ioc);
@@ -548,7 +561,7 @@ cc_result SSL_Read(void* ctx_, cc_uint8* data, cc_uint32 count, cc_uint32* read)
 	return 0;
 }
 
-cc_result SSL_Write(void* ctx_, const cc_uint8* data, cc_uint32 count, cc_uint32* wrote) {
+cc_result SSL_WriteAll(void* ctx_, const cc_uint8* data, cc_uint32 count) {
 	SSLContext* ctx = (SSLContext*)ctx_;
 	// TODO: just br_sslio_write ??
 	int res = br_sslio_write_all(&ctx->ioc, data, count);
@@ -559,7 +572,6 @@ cc_result SSL_Write(void* ctx_, const cc_uint8* data, cc_uint32 count, cc_uint32
 	}
 	
 	br_sslio_flush(&ctx->ioc);
-	*wrote = res;
 	return 0;
 }
 
@@ -582,7 +594,7 @@ cc_result SSL_Read(void* ctx, cc_uint8* data, cc_uint32 count, cc_uint32* read) 
 	return ERR_NOT_SUPPORTED; 
 }
 
-cc_result SSL_Write(void* ctx, const cc_uint8* data, cc_uint32 count, cc_uint32* wrote) { 
+cc_result SSL_WriteAll(void* ctx, const cc_uint8* data, cc_uint32 count) { 
 	return ERR_NOT_SUPPORTED; 
 }
 

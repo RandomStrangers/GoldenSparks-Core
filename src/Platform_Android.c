@@ -20,25 +20,13 @@ void Platform_Log(const char* msg, int len) {
 
 	Mem_Copy(tmp, msg, len); tmp[len] = '\0';
 	/* log using logchat */
-	__android_log_write(ANDROID_LOG_DEBUG, "ClassiCube", tmp);
+	__android_log_write(ANDROID_LOG_DEBUG, "GoldenSparksCore", tmp);
 }
 
 
 /*########################################################################################################################*
 *-----------------------------------------------------Process/Module------------------------------------------------------*
 *#########################################################################################################################*/
-static char gameArgs[GAME_MAX_CMDARGS][STRING_SIZE];
-static int gameNumArgs;
-
-cc_result Process_StartGame2(const cc_string* args, int numArgs) {
-	for (int i = 0; i < numArgs; i++) {
-		String_CopyToRawArray(gameArgs[i], &args[i]);
-	}
-
-	gameNumArgs = numArgs;
-	return 0;
-}
-
 cc_result Process_StartOpen(const cc_string* args) {
 	JavaCall_String_Void("startOpen", args);
 	return 0;
@@ -49,7 +37,7 @@ cc_result Process_StartOpen(const cc_string* args) {
 *--------------------------------------------------------Updater----------------------------------------------------------*
 *#########################################################################################################################*/
 const struct UpdaterInfo Updater_Info = {
-	"&eRedownload and reinstall to update", 0
+	"&eRedownload from github and reinstall to update", 0
 };
 cc_bool Updater_Clean(void) { return true; }
 
@@ -102,17 +90,6 @@ void Directory_GetCachePath(cc_string* path) {
 /*########################################################################################################################*
 *-----------------------------------------------------Configuration-------------------------------------------------------*
 *#########################################################################################################################*/
-int Platform_GetCommandLineArgs(int argc, STRING_REF char** argv, cc_string* args) {
-	int count = gameNumArgs;
-	for (int i = 0; i < count; i++) {
-		args[i] = String_FromRawArray(gameArgs[i]);
-	}
-
-	// clear arguments so after game is closed, launcher is started
-    gameNumArgs = 0;
-    return count;
-}
-
 #include "Window.h"
 cc_result Platform_SetDefaultCurrentDirectory(int argc, char **argv) {
 	cc_string dir; char dirBuffer[FILENAME_SIZE + 1];
@@ -252,8 +229,7 @@ static void JNICALL java_runGameAsync(JNIEnv* env, jobject instance) {
 	Platform_LogConst("Running game async!");
 	/* The game must be run on a separate thread, as blocking the */
 	/* main UI thread will cause a 'App not responding..' messagebox */
-	thread = Thread_Create(android_main);
-	Thread_Start2(thread, android_main);
+	Thread_Run(&thread, android_main, 1024 * 1024, "Game"); // TODO check stack size needed
 	Thread_Detach(thread);
 }
 static const JNINativeMethod methods[] = {
@@ -262,14 +238,14 @@ static const JNINativeMethod methods[] = {
 };
 
 /* This method is automatically called by the Java VM when the */
-/*  activity java class calls 'System.loadLibrary("classicube");' */
+/*  activity java class calls 'System.loadLibrary("goldensparkscore");' */
 CC_API jint JNI_OnLoad(JavaVM* vm, void* reserved) {
 	jclass klass;
 	JNIEnv* env;
 	VM_Ptr = vm;
 	JavaGetCurrentEnv(env);
 
-	klass     = (*env)->FindClass(env, "com/classicube/MainActivity");
+	klass     = (*env)->FindClass(env, "com/goldensparkscore/MainActivity");
 	App_Class = (*env)->NewGlobalRef(env, klass);
 	JavaRegisterNatives(env, methods);
 	return JNI_VERSION_1_4;

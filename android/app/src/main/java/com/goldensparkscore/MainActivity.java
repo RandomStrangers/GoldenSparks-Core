@@ -47,7 +47,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 
-// This class contains all the glue/interop code for bridging GoldenSparks Core to the java Android world.
+// This class contains all the glue/interop code for bridging ClassiCube to the java Android world.
 // Some functionality is only available on later Android versions - try {} catch {} is used in such places 
 //   to ensure that the game can still run on earlier Android versions (albeit with reduced functionality)
 // Currently the minimum required API level to run the game is level 9 (Android 2.3). 
@@ -461,7 +461,7 @@ public class MainActivity extends Activity
 			//08-02 21:03:02.968: E/SurfaceFlinger(1350): Failed to find layer (SurfaceView - com.goldensparkscore.GoldenSparksCore/com.goldensparkscore.MainActivity#0) in layer parent (no-parent).
 	
 			MainActivity.this.pushCmd(CMD_WIN_DESTROYED);
-			//Incase game thread is blocked showing a dialog on main thread
+			// In case game thread is blocked showing a dialog on main thread
 			releaseDialogSem();
 			
 			// per the android docs for SurfaceHolder.Callback
@@ -609,7 +609,7 @@ public class MainActivity extends Activity
 		if (curView == null) return;
 
 		// Try to avoid restarting input if possible
-		GSCView view = (GSCView)curView;
+		CCView view = (CCView)curView;
 		if (view.kbText != null) {
 			String curText = view.kbText.toString();
 			if (text.equals(curText)) return;

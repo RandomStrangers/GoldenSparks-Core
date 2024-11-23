@@ -19,10 +19,13 @@
 
 const cc_result ReturnCode_FileShareViolation = ERROR_SHARING_VIOLATION;
 const cc_result ReturnCode_FileNotFound     = ERROR_FILE_NOT_FOUND;
+const cc_result ReturnCode_DirectoryExists  = ERROR_ALREADY_EXISTS;
 const cc_result ReturnCode_SocketInProgess  = EINPROGRESS;
 const cc_result ReturnCode_SocketWouldBlock = EWOULDBLOCK;
-const cc_result ReturnCode_DirectoryExists  = ERROR_ALREADY_EXISTS;
+const cc_result ReturnCode_SocketDropped    = EPIPE;
+
 const char* Platform_AppNameSuffix = " XBox";
+cc_bool Platform_ReadonlyFilesystem;
 
 
 /*########################################################################################################################*
@@ -34,22 +37,21 @@ void Platform_Log(const char* msg, int len) {
 	Mem_Copy(tmp, msg, len); tmp[len] = '\0';
 	
 	// log to on-screen display
-	debugPrint(tmp);
-	debugPrint("\n");
+	debugPrint("%s\n", tmp);
 	// log to cxbx-reloaded console
 	OutputDebugStringA(tmp);
 }
 
-#define FILETIME_EPOCH 50491123200000ULL
-#define FILETIME_UNIX_EPOCH 11644473600LL
-#define FileTime_TotalMS(time)  ((time / 10000)    + FILETIME_EPOCH)
-#define FileTime_UnixTime(time) ((time / 10000000) - FILETIME_UNIX_EPOCH)
-TimeMS DateTime_CurrentUTC_MS(void) {
+#define FILETIME_EPOCH      50491123200ULL
+#define FILETIME_UNIX_EPOCH 11644473600ULL
+#define FileTime_TotalSecs(time) ((time / 10000000) + FILETIME_EPOCH)
+#define FileTime_UnixTime(time)  ((time / 10000000) - FILETIME_UNIX_EPOCH)
+TimeMS DateTime_CurrentUTC(void) {
 	LARGE_INTEGER ft;
 	
 	KeQuerySystemTime(&ft);
 	/* in 100 nanosecond units, since Jan 1 1601 */
-	return FileTime_TotalMS(ft.QuadPart);
+	return FileTime_TotalSecs(ft.QuadPart);
 }
 
 void DateTime_CurrentLocal(struct DateTime* t) {
@@ -65,10 +67,10 @@ void DateTime_CurrentLocal(struct DateTime* t) {
 }
 
 /* TODO: check this is actually accurate */
-static cc_uint64 sw_freqMul = 1, sw_freqDiv = 1;
+static cc_uint64 sw_freqDiv = 1;
 cc_uint64 Stopwatch_ElapsedMicroseconds(cc_uint64 beg, cc_uint64 end) {
 	if (end < beg) return 0;
-	return ((end - beg) * sw_freqMul) / sw_freqDiv;
+	return ((end - beg) * 1000000ULL) / sw_freqDiv;
 }
 
 cc_uint64 Stopwatch_Measure(void) {
@@ -77,9 +79,7 @@ cc_uint64 Stopwatch_Measure(void) {
 
 static void Stopwatch_Init(void) {
 	ULONGLONG freq = KeQueryPerformanceFrequency();
-
-	sw_freqMul = 1000 * 1000;
-	sw_freqDiv = freq;
+	sw_freqDiv     = freq;
 }
 
 
@@ -89,55 +89,46 @@ static void Stopwatch_Init(void) {
 static cc_string root_path = String_FromConst("E:\\ClassiCube\\");
 static BOOL hdd_mounted;
 
-static void GetNativePath(char* str, const cc_string* src) {
+void Platform_EncodePath(cc_filepath* dst, const cc_string* path) {
+	char* str = dst->buffer;
 	Mem_Copy(str, root_path.buffer, root_path.length);
 	str += root_path.length;
 	
 	// XBox kernel doesn't seem to convert /
-	for (int i = 0; i < src->length; i++) 
+	for (int i = 0; i < path->length; i++) 
 	{
-		char c = (char)src->buffer[i];
+		char c = (char)path->buffer[i];
 		if (c == '/') c = '\\';
 		*str++ = c;
 	}
 	*str = '\0';
 }
 
-cc_result Directory_Create(const cc_string* path) {
+cc_result Directory_Create(const cc_filepath* path) {
 	if (!hdd_mounted) return ERR_NOT_SUPPORTED;
 	
-	char str[NATIVE_STR_LEN];
-	cc_result res;
-
-	GetNativePath(str, path);
-	return CreateDirectoryA(str, NULL) ? 0 : GetLastError();
+	return CreateDirectoryA(path->buffer, NULL) ? 0 : GetLastError();
 }
 
-int File_Exists(const cc_string* path) {
-	if (!hdd_mounted) return ERR_NOT_SUPPORTED;
+int File_Exists(const cc_filepath* path) {
+	if (!hdd_mounted) return 0;
 	
-	char str[NATIVE_STR_LEN];
-	DWORD attribs;
-
-	GetNativePath(str, path);
-	attribs = GetFileAttributesA(str);
-
+	DWORD attribs = GetFileAttributesA(path->buffer);
 	return attribs != INVALID_FILE_ATTRIBUTES && !(attribs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-static cc_result Directory_EnumCore(const cc_string* dirPath, const cc_string* file, DWORD attribs,
+static void Directory_EnumCore(const cc_string* dirPath, const cc_string* file, DWORD attribs,
 									void* obj, Directory_EnumCallback callback) {
 	cc_string path; char pathBuffer[MAX_PATH + 10];
 	/* ignore . and .. entry */
-	if (file->length == 1 && file->buffer[0] == '.') return 0;
-	if (file->length == 2 && file->buffer[0] == '.' && file->buffer[1] == '.') return 0;
+	if (file->length == 1 && file->buffer[0] == '.') return;
+	if (file->length == 2 && file->buffer[0] == '.' && file->buffer[1] == '.') return;
 
 	String_InitArray(path, pathBuffer);
 	String_Format2(&path, "%s/%s", dirPath, file);
 
-	if (attribs & FILE_ATTRIBUTE_DIRECTORY) return Directory_Enum(&path, obj, callback);
-	callback(&path, obj);
-	return 0;
+	int is_dir = attribs & FILE_ATTRIBUTE_DIRECTORY;
+	callback(&path, obj, is_dir);
 }
 
 cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCallback callback) {
@@ -145,16 +136,16 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 	
 	cc_string path; char pathBuffer[MAX_PATH + 10];
 	WIN32_FIND_DATAA eA;
-	char str[NATIVE_STR_LEN];
+	cc_filepath str;
 	HANDLE find;
 	cc_result res;	
 
 	/* Need to append \* to search for files in directory */
 	String_InitArray(path, pathBuffer);
 	String_Format1(&path, "%s\\*", dirPath);
-	GetNativePath(str, &path);
+	Platform_EncodePath(&str, &path);
 	
-	find = FindFirstFileA(str, &eA);
+	find = FindFirstFileA(str.buffer, &eA);
 	if (find == INVALID_HANDLE_VALUE) return GetLastError();
 
 	do {
@@ -163,33 +154,32 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 		{
 			String_Append(&path, Convert_CodepointToCP437(eA.cFileName[i]));
 		}
-		if ((res = Directory_EnumCore(dirPath, &path, eA.dwFileAttributes, obj, callback))) return res;
+		Directory_EnumCore(dirPath, &path, eA.dwFileAttributes, obj, callback);
 	} while (FindNextFileA(find, &eA));
 
 	res = GetLastError(); /* return code from FindNextFile */
-	FindClose(find);
+	NtClose(find);
 	return res == ERROR_NO_MORE_FILES ? 0 : res;
 }
 
-static cc_result DoFile(cc_file* file, const cc_string* path, DWORD access, DWORD createMode) {
-	if (!hdd_mounted) return ERR_NOT_SUPPORTED;
-	
-	char str[NATIVE_STR_LEN];
-	GetNativePath(str, path);
-	cc_result res;
-
-	*file = CreateFileA(str, access, FILE_SHARE_READ, NULL, createMode, 0, NULL);
+static cc_result DoFile(cc_file* file, const char* path, DWORD access, DWORD createMode) {
+	*file = CreateFileA(path, access, FILE_SHARE_READ, NULL, createMode, 0, NULL);
 	return *file != INVALID_HANDLE_VALUE ? 0 : GetLastError();
 }
 
-cc_result File_Open(cc_file* file, const cc_string* path) {
-	return DoFile(file, path, GENERIC_READ, OPEN_EXISTING);
+cc_result File_Open(cc_file* file, const cc_filepath* path) {
+	if (!hdd_mounted) return ReturnCode_FileNotFound;
+	return DoFile(file, path->buffer, GENERIC_READ, OPEN_EXISTING);
 }
-cc_result File_Create(cc_file* file, const cc_string* path) {
-	return DoFile(file, path, GENERIC_WRITE | GENERIC_READ, CREATE_ALWAYS);
+
+cc_result File_Create(cc_file* file, const cc_filepath* path) {
+	if (!hdd_mounted) return ERR_NOT_SUPPORTED;
+	return DoFile(file, path->buffer, GENERIC_WRITE | GENERIC_READ, CREATE_ALWAYS);
 }
-cc_result File_OpenOrCreate(cc_file* file, const cc_string* path) {
-	return DoFile(file, path, GENERIC_WRITE | GENERIC_READ, OPEN_ALWAYS);
+
+cc_result File_OpenOrCreate(cc_file* file, const cc_filepath* path) {
+	if (!hdd_mounted) return ERR_NOT_SUPPORTED;
+	return DoFile(file, path->buffer, GENERIC_WRITE | GENERIC_READ, OPEN_ALWAYS);
 }
 
 cc_result File_Read(cc_file file, void* data, cc_uint32 count, cc_uint32* bytesRead) {
@@ -203,7 +193,8 @@ cc_result File_Write(cc_file file, const void* data, cc_uint32 count, cc_uint32*
 }
 
 cc_result File_Close(cc_file file) {
-	return CloseHandle(file) ? 0 : GetLastError();
+	NTSTATUS status = NtClose(file);
+	return NT_SUCCESS(status) ? 0 : status;
 }
 
 cc_result File_Seek(cc_file file, int offset, int seekType) {
@@ -225,7 +216,15 @@ cc_result File_Length(cc_file file, cc_uint32* len) {
 
 /*########################################################################################################################*
 *--------------------------------------------------------Threading--------------------------------------------------------*
-*#############################################################################################################p############*/
+*##########################################################################################################################*/
+static void WaitForSignal(HANDLE handle, LARGE_INTEGER* duration) {
+	for (;;) 
+	{
+		NTSTATUS status = NtWaitForSingleObjectEx((HANDLE)handle, UserMode, FALSE, duration);
+		if (status != STATUS_ALERTED) break;
+	}
+}
+
 void Thread_Sleep(cc_uint32 milliseconds) { Sleep(milliseconds); }
 static DWORD WINAPI ExecThread(void* param) {
 	Thread_StartFunc func = (Thread_StartFunc)param;
@@ -233,31 +232,26 @@ static DWORD WINAPI ExecThread(void* param) {
 	return 0;
 }
 
-void* Thread_Create(Thread_StartFunc func) {
+void Thread_Run(void** handle, Thread_StartFunc func, int stackSize, const char* name) {
 	DWORD threadID;
-	void* handle = CreateThread(NULL, 0, ExecThread, (void*)func, CREATE_SUSPENDED, &threadID);
-	if (!handle) {
-		Logger_Abort2(GetLastError(), "Creating thread");
-	}
-	return handle;
-}
+	HANDLE thread = CreateThread(NULL, stackSize, ExecThread, (void*)func, CREATE_SUSPENDED, &threadID);
+	if (!thread) Logger_Abort2(GetLastError(), "Creating thread");
 
-void Thread_Start2(void* handle, Thread_StartFunc func) {
-	NtResumeThread((HANDLE)handle, NULL);
+	*handle = thread;
+	NtResumeThread(thread, NULL);
 }
 
 void Thread_Detach(void* handle) {
-	if (!CloseHandle((HANDLE)handle)) {
-		Logger_Abort2(GetLastError(), "Freeing thread handle");
-	}
+	NTSTATUS status = NtClose((HANDLE)handle);
+	if (!NT_SUCCESS(status)) Logger_Abort2(status, "Freeing thread handle");
 }
 
 void Thread_Join(void* handle) {
-	WaitForSingleObject((HANDLE)handle, INFINITE);
+	WaitForSignal((HANDLE)handle, NULL);
 	Thread_Detach(handle);
 }
 
-void* Mutex_Create(void) {
+void* Mutex_Create(const char* name) {
 	CRITICAL_SECTION* ptr = (CRITICAL_SECTION*)Mem_Alloc(1, sizeof(CRITICAL_SECTION), "mutex");
 	RtlInitializeCriticalSection(ptr);
 	return ptr;
@@ -267,103 +261,96 @@ void Mutex_Free(void* handle)   {
 	RtlDeleteCriticalSection((CRITICAL_SECTION*)handle); 
 	Mem_Free(handle);
 }
-void Mutex_Lock(void* handle)   { RtlEnterCriticalSection((CRITICAL_SECTION*)handle); }
-void Mutex_Unlock(void* handle) { RtlLeaveCriticalSection((CRITICAL_SECTION*)handle); }
 
-void* Waitable_Create(void) {
-	void* handle = CreateEventA(NULL, false, false, NULL);
-	if (!handle) {
-		Logger_Abort2(GetLastError(), "Creating waitable");
-	}
+void Mutex_Lock(void* handle)   { 
+	RtlEnterCriticalSection((CRITICAL_SECTION*)handle); 
+}
+
+void Mutex_Unlock(void* handle) { 
+	RtlLeaveCriticalSection((CRITICAL_SECTION*)handle); 
+}
+
+void* Waitable_Create(const char* name) {
+	HANDLE handle;
+	NTSTATUS status = NtCreateEvent(&handle, NULL, SynchronizationEvent, false);
+
+	if (!NT_SUCCESS(status)) Logger_Abort2(status, "Creating waitable");
 	return handle;
 }
 
 void Waitable_Free(void* handle) {
-	if (!CloseHandle((HANDLE)handle)) {
-		Logger_Abort2(GetLastError(), "Freeing waitable");
-	}
+	NTSTATUS status = NtClose((HANDLE)handle);
+	if (!NT_SUCCESS(status)) Logger_Abort2(status, "Freeing waitable");
 }
 
-void Waitable_Signal(void* handle) { NtSetEvent((HANDLE)handle, NULL); }
+void Waitable_Signal(void* handle) { 
+	NtSetEvent((HANDLE)handle, NULL); 
+}
+
 void Waitable_Wait(void* handle) {
-	WaitForSingleObject((HANDLE)handle, INFINITE);
+	WaitForSignal((HANDLE)handle, NULL);
 }
 
 void Waitable_WaitFor(void* handle, cc_uint32 milliseconds) {
-	WaitForSingleObject((HANDLE)handle, milliseconds);
+	LARGE_INTEGER duration;
+	duration.QuadPart = ((LONGLONG)milliseconds) * -10000; // negative for relative timeout
+
+	WaitForSignal((HANDLE)handle, &duration);
 }
 
 
 /*########################################################################################################################*
 *---------------------------------------------------------Socket----------------------------------------------------------*
 *#########################################################################################################################*/
-union SocketAddress {
-	struct sockaddr raw;
-	struct sockaddr_in v4;
-};
-
-static int ParseHost(union SocketAddress* addr, const char* host) {
+cc_result Socket_ParseAddress(const cc_string* address, int port, cc_sockaddr* addrs, int* numValidAddrs) {
+	char str[NATIVE_STR_LEN];
+	char portRaw[32]; cc_string portStr;
 	struct addrinfo hints = { 0 };
 	struct addrinfo* result;
 	struct addrinfo* cur;
-	int found = 0, res;
+	int i = 0;
+	
+	String_EncodeUtf8(str, address);
+	*numValidAddrs = 0;
 
-	hints.ai_family   = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
+	
+	String_InitArray(portStr,  portRaw);
+	String_AppendInt(&portStr, port);
+	portRaw[portStr.length] = '\0';
 
-	res = lwip_getaddrinfo(host, NULL, &hints, &result);
+	int res = lwip_getaddrinfo(str, portRaw, &hints, &result);
+	if (res == EAI_FAIL) return SOCK_ERR_UNKNOWN_HOST;
 	if (res) return res;
 
-	for (cur = result; cur; cur = cur->ai_next) {
-		if (cur->ai_family != AF_INET) continue;
-		found = true;
-
-		Mem_Copy(addr, cur->ai_addr, cur->ai_addrlen);
-		break;
+	for (cur = result; cur && i < SOCKET_MAX_ADDRS; cur = cur->ai_next, i++) 
+	{
+		SocketAddr_Set(&addrs[i], cur->ai_addr, cur->ai_addrlen);
 	}
 
 	lwip_freeaddrinfo(result);
-	return found ? 0 : ERR_INVALID_ARGUMENT;
+	*numValidAddrs = i;
+	return i == 0 ? ERR_INVALID_ARGUMENT : 0;
 }
 
-static int ParseAddress(union SocketAddress* addr, const cc_string* address) {
-	char str[NATIVE_STR_LEN];
-	String_EncodeUtf8(str, address);
+cc_result Socket_Create(cc_socket* s, cc_sockaddr* addr, cc_bool nonblocking) {
+	struct sockaddr* raw = (struct sockaddr*)addr->data;
 
-	if (inet_pton(AF_INET, str, &addr->v4.sin_addr) > 0) return 0;
-	return ParseHost(addr, str);
-}
-
-int Socket_ValidAddress(const cc_string* address) {
-	union SocketAddress addr;
-	return ParseAddress(&addr, address) == 0;
-}
-
-cc_result Socket_Connect(cc_socket* s, const cc_string* address, int port, cc_bool nonblocking) {
-	int family, addrSize = 0;
-	union SocketAddress addr;
-	int res;
-	// TODO TODO TODO TODO TODO
-	// if 'addrSize = 0' is removed, then the game never gets past 'Fetching cdn.classicube.net...'
-	// so probably relying on undefined behaviour somewhere...
-
-	*s  = -1;
-	res = ParseAddress(&addr, address);
-	if (res) return res;
-
-	*s = lwip_socket(AF_INET, SOCK_STREAM, 0);
+	*s = lwip_socket(raw->sa_family, SOCK_STREAM, 0);
 	if (*s == -1) return errno;
 
 	if (nonblocking) {
 		int blocking_raw = -1; /* non-blocking mode */
 		lwip_ioctl(*s, FIONBIO, &blocking_raw);
 	}
+	return 0;
+}
 
-	addr.v4.sin_family = AF_INET;
-	addr.v4.sin_port   = htons(port);
+cc_result Socket_Connect(cc_socket s, cc_sockaddr* addr) {
+	struct sockaddr* raw = (struct sockaddr*)addr->data;
 
-	res = lwip_connect(*s, &addr.raw, sizeof(addr.v4));
+	int res = lwip_connect(s, raw, addr->size);
 	return res == -1 ? errno : 0;
 }
 
@@ -417,18 +404,27 @@ cc_result Socket_CheckWritable(cc_socket s, cc_bool* writable) {
 *--------------------------------------------------------Platform---------------------------------------------------------*
 *#########################################################################################################################*/
 static void InitHDD(void) {
-    hdd_mounted = nxMountDrive('E', "\\Device\\Harddisk0\\Partition1\\");
-    if (!hdd_mounted) {
-        Platform_LogConst("Failed to mount E:/ from Data partition");
-        return;
-    }
-    Directory_Create(&String_Empty); // create root ClassiCube folder
+	if (nxIsDriveMounted('E')) {
+		hdd_mounted = true;
+	} else {
+		hdd_mounted = nxMountDrive('E', "\\Device\\Harddisk0\\Partition1\\");
+	}
+
+	if (!hdd_mounted) {
+		Platform_LogConst("Failed to mount E:/ from Data partition");
+		return;
+	}
+	
+	cc_filepath* root = FILEPATH_RAW(root_path.buffer);
+	Directory_Create(root);
 }
 
 void Platform_Init(void) {
 	InitHDD();
 	Stopwatch_Init();
+#ifndef CC_BUILD_CXBX
 	nxNetInit(NULL);
+#endif
 }
 
 void Platform_Free(void) {
@@ -438,11 +434,19 @@ cc_bool Platform_DescribeError(cc_result res, cc_string* dst) {
 	return false;
 }
 
+cc_bool Process_OpenSupported = false;
+cc_result Process_StartOpen(const cc_string* args) {
+	return ERR_NOT_SUPPORTED;
+}
+
 
 /*########################################################################################################################*
 *-------------------------------------------------------Encryption--------------------------------------------------------*
 *#########################################################################################################################*/
+#define MACHINE_KEY "XboxXboxXboxXbox"
+
 static cc_result GetMachineID(cc_uint32* key) {
-	return ERR_NOT_SUPPORTED;
+	Mem_Copy(key, MACHINE_KEY, sizeof(MACHINE_KEY) - 1);
+	return 0;
 }
 #endif

@@ -16,7 +16,9 @@
 #include "Chat.h"
 #include "TexturePack.h"
 #include "Utils.h"
-static cc_bool calcDefaultSpawn;
+
+#ifdef CC_BUILD_FILESYSTEM
+static struct LocationUpdate* spawn_point;
 static struct MapImporter* imp_head;
 static struct MapImporter* imp_tail;
 
@@ -61,12 +63,13 @@ struct MapImporter* MapImporter_Find(const cc_string* path) {
 
 cc_result Map_LoadFrom(const cc_string* path) {
 	cc_string relPath, fileName, fileExt;
+	struct LocationUpdate update = { 0 };
 	struct MapImporter* imp;
 	struct Stream stream;
 	cc_result res;
 	Game_Reset();
 	
-	calcDefaultSpawn = false;
+	spawn_point = &update;
 	res = Stream_OpenFile(&stream, path);
 	if (res) { Logger_SysWarn2(res, "opening", path); return res; }
 
@@ -82,8 +85,8 @@ cc_result Map_LoadFrom(const cc_string* path) {
 	if (res) Logger_SysWarn2(res, "decoding", path);
 
 	World_SetNewMap(World.Blocks, World.Width, World.Height, World.Length);
-	if (calcDefaultSpawn) LocalPlayer_CalcDefaultSpawn();
-	LocalPlayer_MoveToSpawn();
+	if (!spawn_point) LocalPlayer_CalcDefaultSpawn(Entities.CurPlayer, &update);
+	LocalPlayers_MoveToSpawn(&update);
 
 	relPath = *path;
 	Utils_UNSAFE_GetFilename(&relPath);
@@ -182,7 +185,6 @@ static cc_result Lvl_Load(struct Stream* stream) {
 	cc_result res;
 	int i;
 
-	struct LocalPlayer* p = &LocalPlayer_Instance;
 	struct Stream compStream;
 	struct InflateState state;
 	Inflate_MakeStream2(&compStream, &state, stream);
@@ -195,11 +197,12 @@ static cc_result Lvl_Load(struct Stream* stream) {
 	World.Length = Stream_GetU16_LE(&header[4]);
 	World.Height = Stream_GetU16_LE(&header[6]);
 
-	p->Spawn.X = Stream_GetU16_LE(&header[8]);
-	p->Spawn.Z = Stream_GetU16_LE(&header[10]);
-	p->Spawn.Y = Stream_GetU16_LE(&header[12]);
-	p->SpawnYaw   = Math_Packed2Deg(header[14]);
-	p->SpawnPitch = Math_Packed2Deg(header[15]);
+	spawn_point->flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
+	spawn_point->pos.x = Stream_GetU16_LE(&header[8]);
+	spawn_point->pos.z = Stream_GetU16_LE(&header[10]);
+	spawn_point->pos.y = Stream_GetU16_LE(&header[12]);
+	spawn_point->yaw   = Math_Packed2Deg(header[14]);
+	spawn_point->pitch = Math_Packed2Deg(header[15]);
 	/* (2) pervisit, perbuild permissions */
 
 	if ((res = Map_ReadBlocks(&compStream))) return res;
@@ -269,7 +272,6 @@ static cc_result Fcm_Load(struct Stream* stream) {
 	cc_result res;
 	int i, count;
 
-	struct LocalPlayer* p = &LocalPlayer_Instance;
 	struct Stream compStream;
 	struct InflateState state;
 	Inflate_MakeStream2(&compStream, &state, stream);
@@ -282,11 +284,12 @@ static cc_result Fcm_Load(struct Stream* stream) {
 	World.Height = Stream_GetU16_LE(&header[7]);
 	World.Length = Stream_GetU16_LE(&header[9]);
 	
-	p->Spawn.X = ((int)Stream_GetU32_LE(&header[11])) / 32.0f;
-	p->Spawn.Y = ((int)Stream_GetU32_LE(&header[15])) / 32.0f;
-	p->Spawn.Z = ((int)Stream_GetU32_LE(&header[19])) / 32.0f;
-	p->SpawnYaw   = Math_Packed2Deg(header[23]);
-	p->SpawnPitch = Math_Packed2Deg(header[24]);
+	spawn_point->flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
+	spawn_point->pos.x = ((int)Stream_GetU32_LE(&header[11])) / 32.0f;
+	spawn_point->pos.y = ((int)Stream_GetU32_LE(&header[15])) / 32.0f;
+	spawn_point->pos.z = ((int)Stream_GetU32_LE(&header[19])) / 32.0f;
+	spawn_point->yaw   = Math_Packed2Deg(header[23]);
+	spawn_point->pitch = Math_Packed2Deg(header[24]);
 
 	/* header[25] (4) date modified */
 	/* header[29] (4) date created */
@@ -675,19 +678,18 @@ static void Cw_Callback_1(struct NbtTag* tag) {
 }
 
 static void Cw_Callback_2(struct NbtTag* tag) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
-
 	if (IsTag(tag->parent, "MapGenerator")) {
 		if (IsTag(tag, "Seed")) { World.Seed = NbtTag_I32(tag); return; }
 		return;
 	}
 	if (!IsTag(tag->parent, "Spawn")) return;
+	spawn_point->flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
 	
-	if (IsTag(tag, "X")) { p->Spawn.X = NbtTag_I16(tag); return; }
-	if (IsTag(tag, "Y")) { p->Spawn.Y = NbtTag_I16(tag); return; }
-	if (IsTag(tag, "Z")) { p->Spawn.Z = NbtTag_I16(tag); return; }
-	if (IsTag(tag, "H")) { p->SpawnYaw   = Math_Packed2Deg(NbtTag_U8(tag)); return; }
-	if (IsTag(tag, "P")) { p->SpawnPitch = Math_Packed2Deg(NbtTag_U8(tag)); return; }
+	if (IsTag(tag, "X")) { spawn_point->pos.x = NbtTag_I16(tag); return; }
+	if (IsTag(tag, "Y")) { spawn_point->pos.y = NbtTag_I16(tag); return; }
+	if (IsTag(tag, "Z")) { spawn_point->pos.z = NbtTag_I16(tag); return; }
+	if (IsTag(tag, "H")) { spawn_point->yaw   = Math_Packed2Deg(NbtTag_U8(tag)); return; }
+	if (IsTag(tag, "P")) { spawn_point->pitch = Math_Packed2Deg(NbtTag_U8(tag)); return; }
 }
 
 static BlockID cw_curID;
@@ -700,7 +702,7 @@ static PackedCol Cw_ParseColor(PackedCol defValue) {
 
 static void Cw_Callback_4(struct NbtTag* tag) {
 	BlockID id = cw_curID;
-	struct LocalPlayer* p = &LocalPlayer_Instance;
+	struct LocalPlayer* p = &LocalPlayer_Instances[0];
 
 	if (!IsTag(tag->parent->parent, "CPE")) return;
 	if (!IsTag(tag->parent->parent->parent, "Metadata")) return;
@@ -796,7 +798,7 @@ static void Cw_Callback_5(struct NbtTag* tag) {
 		if (IsTag(tag, "CollideType"))    { Blocks.Collide[id] = NbtTag_U8(tag); return; }
 		if (IsTag(tag, "Speed"))          { Blocks.SpeedMultiplier[id] = NbtTag_F32(tag); return; }
 		if (IsTag(tag, "TransmitsLight")) { Blocks.BlocksLight[id] = NbtTag_U8(tag) == 0; return; }
-		if (IsTag(tag, "FullBright"))     { Blocks.FullBright[id] = NbtTag_U8(tag) != 0; return; }
+		if (IsTag(tag, "FullBright"))     { Blocks.Brightness[id] = Block_ReadBrightness(NbtTag_U8(tag)); return; }
 		if (IsTag(tag, "BlockDraw"))      { Blocks.Draw[id] = NbtTag_U8(tag); return; }
 		if (IsTag(tag, "Shape"))          { Blocks.SpriteOffset[id] = NbtTag_U8(tag); return; }
 
@@ -836,8 +838,8 @@ static void Cw_Callback_5(struct NbtTag* tag) {
 			if (!arr) return;
 
 			Blocks.FogDensity[id] = (arr[0] + 1) / 128.0f;
-			/* Fix for older ClassicalSharp versions which saved wrong fog density value */
-			if (arr[0] == 0xFF) Blocks.FogDensity[id] = 0.0f;
+			/* Backwards compatibility with apps that use 0xFF to indicate no fog */
+			if (arr[0] == 0 || arr[0] == 0xFF) Blocks.FogDensity[id] = 0.0f;
 			Blocks.FogCol[id] = PackedCol_Make(arr[1], arr[2], arr[3], 255);
 			return;
 		}
@@ -846,9 +848,9 @@ static void Cw_Callback_5(struct NbtTag* tag) {
 			arr = NbtTag_U8_Array(tag, 6);
 			if (!arr) return;
 
-			Blocks.MinBB[id].X = (cc_int8)arr[0] / 16.0f; Blocks.MaxBB[id].X = (cc_int8)arr[3] / 16.0f;
-			Blocks.MinBB[id].Y = (cc_int8)arr[1] / 16.0f; Blocks.MaxBB[id].Y = (cc_int8)arr[4] / 16.0f;
-			Blocks.MinBB[id].Z = (cc_int8)arr[2] / 16.0f; Blocks.MaxBB[id].Z = (cc_int8)arr[5] / 16.0f;
+			Blocks.MinBB[id].x = (cc_int8)arr[0] / 16.0f; Blocks.MaxBB[id].x = (cc_int8)arr[3] / 16.0f;
+			Blocks.MinBB[id].y = (cc_int8)arr[1] / 16.0f; Blocks.MaxBB[id].y = (cc_int8)arr[4] / 16.0f;
+			Blocks.MinBB[id].z = (cc_int8)arr[2] / 16.0f; Blocks.MaxBB[id].z = (cc_int8)arr[5] / 16.0f;
 			return;
 		}
 	}
@@ -1236,7 +1238,7 @@ Classic 0.15 to Classic 0.30:
 
 static void Dat_Format0And1(void) {
 	/* Formats 0 and 1 don't store spawn position, so use default of map centre */
-	calcDefaultSpawn = true;
+	spawn_point = NULL;
 
 	/* Similiar env to how it appears in preclassic - 0.13 classic client */
 	Env.CloudsHeight = -30000;
@@ -1284,7 +1286,6 @@ static cc_result Dat_LoadFormat1(struct Stream* stream) {
 }
 
 static cc_result Dat_LoadFormat2(struct Stream* stream) {
-	struct LocalPlayer* p = &LocalPlayer_Instance;
 	struct JClassDesc classes[CLASS_CAPACITY];
 	cc_uint8 header[2 + 2];
 	struct JUnion obj;
@@ -1324,11 +1325,14 @@ static cc_result Dat_LoadFormat2(struct Stream* stream) {
 			World.Blocks = field->Value.Array.Ptr;
 			World.Volume = field->Value.Array.Size;
 		} else if (String_CaselessEqualsConst(&fieldName, "xSpawn")) {
-			p->Spawn.X = (float)Java_I32(field);
+			spawn_point->pos.x = (float)Java_I32(field);
+			spawn_point->flags = LU_HAS_POS;
 		} else if (String_CaselessEqualsConst(&fieldName, "ySpawn")) {
-			p->Spawn.Y = (float)Java_I32(field);
+			spawn_point->pos.y = (float)Java_I32(field);
+			spawn_point->flags = LU_HAS_POS;
 		} else if (String_CaselessEqualsConst(&fieldName, "zSpawn")) {
-			p->Spawn.Z = (float)Java_I32(field);
+			spawn_point->pos.z = (float)Java_I32(field);
+			spawn_point->flags = LU_HAS_POS;
 		}
 	}
 	return 0;
@@ -1445,11 +1449,12 @@ static void MCLevel_Callback_3(struct NbtTag* tag) {
 	struct NbtTag* field = tag->parent;
 
 	if (IsTag(group, "Map") && IsTag(field, "spawn")) {
-		cc_int16 value = NbtTag_I16(tag);
+		cc_int16 value     = NbtTag_I16(tag);
+		spawn_point->flags = LU_HAS_POS;
 
-		if (tag->listIndex == 0) LocalPlayer_Instance.Spawn.X = value;
-		if (tag->listIndex == 1) LocalPlayer_Instance.Spawn.Y = value - 1.0f;
-		if (tag->listIndex == 2) LocalPlayer_Instance.Spawn.Z = value;
+		if (tag->listIndex == 0) spawn_point->pos.x = value;
+		if (tag->listIndex == 1) spawn_point->pos.y = value - 1.0f;
+		if (tag->listIndex == 2) spawn_point->pos.z = value;
 	}
 }
 
@@ -1541,21 +1546,21 @@ static cc_result Cw_WriteBockDef(struct Stream* stream, int b) {
 
 		cur  = Nbt_WriteUInt8(cur,  "TransmitsLight", Blocks.BlocksLight[b] ? 0 : 1);
 		cur  = Nbt_WriteUInt8(cur,  "WalkSound",      Blocks.DigSounds[b]);
-		cur  = Nbt_WriteUInt8(cur,  "FullBright",     Blocks.FullBright[b] ? 1 : 0);
-		cur  = Nbt_WriteUInt8(cur,  "Shape",          sprite ? 0 : (cc_uint8)(Blocks.MaxBB[b].Y * 16));
+		cur  = Nbt_WriteUInt8(cur,  "FullBright",     Block_WriteFullBright(Blocks.Brightness[b]));
+		cur  = Nbt_WriteUInt8(cur,  "Shape",          sprite ? 0 : (cc_uint8)(Blocks.MaxBB[b].y * 16));
 		cur  = Nbt_WriteUInt8(cur,  "BlockDraw",      sprite ? Blocks.SpriteOffset[b] : Blocks.Draw[b]);
 
 		cur = Nbt_WriteArray(cur, "Fog", 4);
 		fog = (cc_uint8)(128 * Blocks.FogDensity[b] - 1);
 		col = Blocks.FogCol[b];
-		cur[0] = Blocks.FogDensity[b] ? fog : 0;
+		cur[0] = Blocks.FogDensity[b] ? fog : 0xFF; /* write 0xFF instead of 0 for backwards compatibility */
 		cur[1] = PackedCol_R(col); cur[2] = PackedCol_G(col); cur[3] = PackedCol_B(col);
 		cur += 4;
 
 		cur  = Nbt_WriteArray(cur,  "Coords", 6);
 		minBB  = Blocks.MinBB[b]; maxBB = Blocks.MaxBB[b];
-		cur[0] = (cc_uint8)(minBB.X * 16); cur[1] = (cc_uint8)(minBB.Y * 16); cur[2] = (cc_uint8)(minBB.Z * 16);
-		cur[3] = (cc_uint8)(maxBB.X * 16); cur[4] = (cc_uint8)(maxBB.Y * 16); cur[5] = (cc_uint8)(maxBB.Z * 16);
+		cur[0] = (cc_uint8)(minBB.x * 16); cur[1] = (cc_uint8)(minBB.y * 16); cur[2] = (cc_uint8)(minBB.z * 16);
+		cur[3] = (cc_uint8)(maxBB.x * 16); cur[4] = (cc_uint8)(maxBB.y * 16); cur[5] = (cc_uint8)(maxBB.z * 16);
 		cur += 6;
 
 		name = Block_UNSAFE_GetName(b);
@@ -1566,9 +1571,9 @@ static cc_result Cw_WriteBockDef(struct Stream* stream, int b) {
 }
 
 cc_result Cw_Save(struct Stream* stream) {
+	struct LocalPlayer* p = Entities.CurPlayer;
 	cc_uint8 buffer[2048];
 	cc_uint8* cur;
-	struct LocalPlayer* p = &LocalPlayer_Instance;
 	cc_result res;
 	int b;
 
@@ -1589,9 +1594,9 @@ cc_result Cw_Save(struct Stream* stream) {
 	/* TODO: Maybe keep real spawn too? */
 	cur = Nbt_WriteDict(cur, "Spawn");
 	{
-		cur  = Nbt_WriteUInt16(cur, "X", (cc_uint16)p->Base.Position.X);
-		cur  = Nbt_WriteUInt16(cur, "Y", (cc_uint16)p->Base.Position.Y);
-		cur  = Nbt_WriteUInt16(cur, "Z", (cc_uint16)p->Base.Position.Z);
+		cur  = Nbt_WriteUInt16(cur, "X", (cc_uint16)p->Base.Position.x);
+		cur  = Nbt_WriteUInt16(cur, "Y", (cc_uint16)p->Base.Position.y);
+		cur  = Nbt_WriteUInt16(cur, "Z", (cc_uint16)p->Base.Position.z);
 		cur  = Nbt_WriteUInt8(cur,  "H", Math_Deg2Packed(p->SpawnYaw));
 		cur  = Nbt_WriteUInt8(cur,  "P", Math_Deg2Packed(p->SpawnPitch));
 	} *cur++ = NBT_END;
@@ -1616,7 +1621,7 @@ cc_result Cw_Save(struct Stream* stream) {
 	{
 		cur = Nbt_WriteDict(cur, "ClickDistance");
 		{
-			cur  = Nbt_WriteUInt16(cur, "Distance", (cc_uint16)(LocalPlayer_Instance.ReachDistance * 32));
+			cur  = Nbt_WriteUInt16(cur, "Distance", (cc_uint16)(p->ReachDistance * 32));
 		} *cur++ = NBT_END;
 
 		cur = Nbt_WriteDict(cur, "EnvWeatherType");
@@ -1733,9 +1738,9 @@ static const struct JField {
 	{ JFIELD_I32, false, "width",  &World.Width  },
 	{ JFIELD_I32, false, "depth",  &World.Height },
 	{ JFIELD_I32, false, "height", &World.Length },
-	{ JFIELD_I32, true,  "xSpawn", &LocalPlayer_Instance.Base.Position.X },
-	{ JFIELD_I32, true,  "ySpawn", &LocalPlayer_Instance.Base.Position.Y },
-	{ JFIELD_I32, true,  "zSpawn", &LocalPlayer_Instance.Base.Position.Z },
+	{ JFIELD_I32, true,  "xSpawn", &LocalPlayer_Instances[0].Base.Position.x },
+	{ JFIELD_I32, true,  "ySpawn", &LocalPlayer_Instances[0].Base.Position.y },
+	{ JFIELD_I32, true,  "zSpawn", &LocalPlayer_Instances[0].Base.Position.z },
 	{ JFIELD_ARRAY,0, "blocks" }
 	/* TODO classic only blocks */
 };
@@ -1790,7 +1795,7 @@ static const cc_uint8 cpe_fallback[] = {
 	BLOCK_WOOD, BLOCK_STONE
 };
 
-#define DAT_BUFFER_SIZE (64 * 1024)
+#define DAT_BUFFER_SIZE (32 * 1024)
 static cc_result WriteLevelBlocks(struct Stream* stream) {
 	cc_uint8 buffer[DAT_BUFFER_SIZE];
 	int i, bIndex = 0;
@@ -1873,6 +1878,18 @@ static void OnInit(void) {
 static void OnFree(void) {
 	imp_head = NULL;
 }
+#else
+/* No point including map format code when can't save/load maps anyways */
+struct MapImporter* MapImporter_Find(const cc_string* path) { return NULL; }
+cc_result Map_LoadFrom(const cc_string* path) { return ERR_NOT_SUPPORTED; }
+
+cc_result Cw_Save(struct Stream* stream)  { return ERR_NOT_SUPPORTED; }
+cc_result Dat_Save(struct Stream* stream) { return ERR_NOT_SUPPORTED; }
+cc_result Schematic_Save(struct Stream* stream) { return ERR_NOT_SUPPORTED; }
+
+static void OnInit(void) { }
+static void OnFree(void) { }
+#endif
 
 struct IGameComponent Formats_Component = {
 	OnInit, /* Init  */

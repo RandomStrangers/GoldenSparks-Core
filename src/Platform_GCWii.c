@@ -22,6 +22,7 @@
 #include <ogc/cond.h>
 #include <ogc/lwp_watchdog.h>
 #include <fat.h>
+#include <ogc/exi.h>
 #ifdef HW_RVL
 #include <ogc/wiilaunch.h>
 #endif
@@ -29,43 +30,59 @@
 
 const cc_result ReturnCode_FileShareViolation = 1000000000; /* TODO: not used apparently */
 const cc_result ReturnCode_FileNotFound     = ENOENT;
+const cc_result ReturnCode_DirectoryExists  = EEXIST;
 const cc_result ReturnCode_SocketInProgess  = -EINPROGRESS; // net_XYZ error results are negative
 const cc_result ReturnCode_SocketWouldBlock = -EWOULDBLOCK;
-const cc_result ReturnCode_DirectoryExists  = EEXIST;
+const cc_result ReturnCode_SocketDropped    = -EPIPE;
+
 #ifdef HW_RVL
 const char* Platform_AppNameSuffix = " Wii";
 #else
 const char* Platform_AppNameSuffix = " GameCube";
 #endif
+cc_bool Platform_ReadonlyFilesystem;
 
 
 /*########################################################################################################################*
 *------------------------------------------------------Logging/Time-------------------------------------------------------*
 *#########################################################################################################################*/
-// dolphin recognises this function name (if loaded as .elf), and will patch it
-//  to also log the message to dolphin's console at OSREPORT-HLE log level
-void CC_NOINLINE __write_console(int fd, const char* msg, const u32* size) {
-	write(STDOUT_FILENO, msg, *size); // this can be intercepted by libogc debug console
-}
-void Platform_Log(const char* msg, int len) {
-	char buffer[256];
-	cc_string str = String_Init(buffer, 0, 254); // 2 characters (\n and \0)
-	u32 size;
-	
-	String_AppendAll(&str, msg, len);
-	buffer[str.length + 0] = '\n';
-	buffer[str.length + 1] = '\0'; // needed to make Dolphin logger happy
-	
-	size = str.length + 1; // +1 for '\n'
-	__write_console(0, buffer, &size); 
-	// TODO: Just use printf("%s", somehow ???
+// To see these log messages:
+//   1) In the UI, make sure 'Show log configuration' checkbox is checked in View menu
+//   2) Make sure "OSReport EXI (OSREPORT)" log type is enabled
+//   3) In the UI, make sure 'Show log' checkbox is checked in View menu
+static void LogOverEXI(char* msg, int len) {
+	u32 cmd = 0x80000000 | (0x800400 << 6); // write flag, UART base address
+
+	// https://hitmen.c02.at/files/yagcd/yagcd/chap10.html
+	// Try to acquire "MASK ROM"/"IPL" link
+	// Writing to the IPL is used for debug message logging
+	if (EXI_Lock(EXI_CHANNEL_0,   EXI_DEVICE_1, NULL) == 0) return;
+	if (EXI_Select(EXI_CHANNEL_0, EXI_DEVICE_1, EXI_SPEED8MHZ) == 0) {
+		EXI_Unlock(EXI_CHANNEL_0); return;
+	}
+
+	EXI_Imm(     EXI_CHANNEL_0, &cmd, 4, EXI_WRITE, NULL);
+	EXI_Sync(    EXI_CHANNEL_0);
+	EXI_ImmEx(   EXI_CHANNEL_0, msg, len, EXI_WRITE);
+	EXI_Deselect(EXI_CHANNEL_0);
+	EXI_Unlock(  EXI_CHANNEL_0);
 }
 
-#define UnixTime_TotalMS(time) ((cc_uint64)time.tv_sec * 1000 + UNIX_EPOCH + (time.tv_usec / 1000))
-TimeMS DateTime_CurrentUTC_MS(void) {
-	struct timeval cur;
-	gettimeofday(&cur, NULL);
-	return UnixTime_TotalMS(cur);
+void Platform_Log(const char* msg, int len) {
+	char tmp[256 + 1];
+	len = min(len, 256);
+	// See EXI_DeviceIPL.cpp in Dolphin, \r is what triggers buffered message to be logged
+	Mem_Copy(tmp, msg, len); tmp[len] = '\r';
+
+	LogOverEXI(tmp, len + 1);
+}
+
+#define GCWII_EPOCH_ADJUST 946684800ULL // GameCube/Wii time epoch is year 2000, not 1970
+
+TimeMS DateTime_CurrentUTC(void) {
+	u64 raw  = gettime();
+	u64 secs = ticks_to_secs(raw);
+	return secs + UNIX_EPOCH_SECONDS + GCWII_EPOCH_ADJUST;
 }
 
 void DateTime_CurrentLocal(struct DateTime* t) {
@@ -105,40 +122,37 @@ static bool fat_available;
 // FindDevice() returns -1 when no matching device, however the code still unconditionally does "if (devoptab_list[dev]->mkdir_r) {"
 // - so will either attempt to access or execute invalid memory
 
-static void GetNativePath(char* str, const cc_string* path) {
+void Platform_EncodePath(cc_filepath* dst, const cc_string* path) {
+	char* str = dst->buffer;
 	Mem_Copy(str, root_path.buffer, root_path.length);
 	str   += root_path.length;
 	*str++ = '/';
 	String_EncodeUtf8(str, path);
 }
 
-cc_result Directory_Create(const cc_string* path) {
+cc_result Directory_Create(const cc_filepath* path) {
 	if (!fat_available) return ENOSYS;
-	
-	char str[NATIVE_STR_LEN];
-	GetNativePath(str, path);
-	return mkdir(str, 0) == -1 ? errno : 0;
+
+	return mkdir(path->buffer, 0) == -1 ? errno : 0;
 }
 
-int File_Exists(const cc_string* path) {
+int File_Exists(const cc_filepath* path) {
 	if (!fat_available) return false;
 	
-	char str[NATIVE_STR_LEN];
 	struct stat sb;
-	GetNativePath(str, path);
-	return stat(str, &sb) == 0 && S_ISREG(sb.st_mode);
+	return stat(path->buffer, &sb) == 0 && S_ISREG(sb.st_mode);
 }
 
 cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCallback callback) {
 	if (!fat_available) return ENOSYS;
 
 	cc_string path; char pathBuffer[FILENAME_SIZE];
-	char str[NATIVE_STR_LEN];
+	cc_filepath str;
 	struct dirent* entry;
 	int res;
 
-	GetNativePath(str, dirPath);
-	DIR* dirPtr = opendir(str);
+	Platform_EncodePath(&str, dirPath);
+	DIR* dirPtr = opendir(str.buffer);
 	if (!dirPtr) return errno;
 
 	// POSIX docs: "When the end of the directory is encountered, a null pointer is returned and errno is not changed."
@@ -160,12 +174,7 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 		int is_dir = entry->d_type == DT_DIR;
 		// TODO: fallback to stat when this fails
 
-		if (is_dir) {
-			res = Directory_Enum(&path, obj, callback);
-			if (res) { closedir(dirPtr); return res; }
-		} else {
-			callback(&path, obj);
-		}
+		callback(&path, obj, is_dir);
 		errno = 0;
 	}
 
@@ -174,23 +183,24 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 	return res;
 }
 
-static cc_result File_Do(cc_file* file, const cc_string* path, int mode) {
-	if (!fat_available) return ENOSYS;
-	
-	char str[NATIVE_STR_LEN];
-	GetNativePath(str, path);
-	*file = open(str, mode, 0);
+static cc_result File_Do(cc_file* file, const char* path, int mode) {
+	*file = open(path, mode, 0);
 	return *file == -1 ? errno : 0;
 }
 
-cc_result File_Open(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDONLY);
+cc_result File_Open(cc_file* file, const cc_filepath* path) {
+	if (!fat_available) return ReturnCode_FileNotFound;
+	return File_Do(file, path->buffer, O_RDONLY);
 }
-cc_result File_Create(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDWR | O_CREAT | O_TRUNC);
+
+cc_result File_Create(cc_file* file, const cc_filepath* path) {
+	if (!fat_available) return ENOTSUP;
+	return File_Do(file, path->buffer, O_RDWR | O_CREAT | O_TRUNC);
 }
-cc_result File_OpenOrCreate(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, O_RDWR | O_CREAT);
+
+cc_result File_OpenOrCreate(cc_file* file, const cc_filepath* path) {
+	if (!fat_available) return ENOTSUP;
+	return File_Do(file, path->buffer, O_RDWR | O_CREAT);
 }
 
 cc_result File_Read(cc_file file, void* data, cc_uint32 count, cc_uint32* bytesRead) {
@@ -234,13 +244,11 @@ static void* ExecThread(void* param) {
 	return NULL;
 }
 
-void* Thread_Create(Thread_StartFunc func) {
-	return Mem_Alloc(1, sizeof(lwp_t), "thread");
-}
-
-void Thread_Start2(void* handle, Thread_StartFunc func) {
-	lwp_t* ptr = (lwp_t*)handle;
-	int res = LWP_CreateThread(ptr, ExecThread, (void*)func, NULL, 256 * 1024, 80);
+void Thread_Run(void** handle, Thread_StartFunc func, int stackSize, const char* name) {
+	lwp_t* thread = (lwp_t*)Mem_Alloc(1, sizeof(lwp_t), "thread");
+	*handle = thread;
+	
+	int res = LWP_CreateThread(thread, ExecThread, (void*)func, NULL, stackSize, 80);
 	if (res) Logger_Abort2(res, "Creating thread");
 }
 
@@ -257,7 +265,7 @@ void Thread_Join(void* handle) {
 	Mem_Free(ptr);
 }
 
-void* Mutex_Create(void) {
+void* Mutex_Create(const char* name) {
 	mutex_t* ptr = (mutex_t*)Mem_Alloc(1, sizeof(mutex_t), "mutex");
 	int res = LWP_MutexInit(ptr, false);
 	if (res) Logger_Abort2(res, "Creating mutex");
@@ -290,7 +298,7 @@ struct WaitData {
 	int signalled; // For when Waitable_Signal is called before Waitable_Wait
 };
 
-void* Waitable_Create(void) {
+void* Waitable_Create(const char* name) {
 	struct WaitData* ptr = (struct WaitData*)Mem_Alloc(1, sizeof(struct WaitData), "waitable");
 	int res;
 	
@@ -360,62 +368,73 @@ void Waitable_WaitFor(void* handle, cc_uint32 milliseconds) {
 /*########################################################################################################################*
 *---------------------------------------------------------Socket----------------------------------------------------------*
 *#########################################################################################################################*/
-union SocketAddress {
-	struct sockaddr raw;
-	struct sockaddr_in v4;
-};
-
-static int ParseHost(union SocketAddress* addr, const char* host) {
+static cc_result ParseHost(const char* host, int port, cc_sockaddr* addrs, int* numValidAddrs) {
 #ifdef HW_RVL
 	struct hostent* res = net_gethostbyname(host);
+	struct sockaddr_in* addr4;
+	char* src_addr;
+	int i;
+	
 	// avoid confusion with SSL error codes
 	// e.g. FFFF FFF7 > FF00 FFF7
 	if (!res) return -0xFF0000 + errno;
 	
 	// Must have at least one IPv4 address
 	if (res->h_addrtype != AF_INET) return ERR_INVALID_ARGUMENT;
-	if (!res->h_addr_list[0])       return ERR_INVALID_ARGUMENT;
+	if (!res->h_addr_list)          return ERR_INVALID_ARGUMENT;
 
-	addr->v4.sin_addr = *(struct in_addr*)res->h_addr_list[0];
-	return 0;
+	for (i = 0; i < SOCKET_MAX_ADDRS; i++) 
+	{
+		src_addr = res->h_addr_list[i];
+		if (!src_addr) break;
+		addrs[i].size = sizeof(struct sockaddr_in);
+
+		addr4 = (struct sockaddr_in*)addrs[i].data;
+		addr4->sin_family = AF_INET;
+		addr4->sin_port   = htons(port);
+		addr4->sin_addr   = *(struct in_addr*)src_addr;
+	}
+
+	*numValidAddrs = i;
+	return i == 0 ? ERR_INVALID_ARGUMENT : 0;
 #else
 	// DNS resolution not implemented in gamecube libbba
 	return ERR_NOT_SUPPORTED;
 #endif
 }
-
-static int ParseAddress(union SocketAddress* addr, const cc_string* address) {
+cc_result Socket_ParseAddress(const cc_string* address, int port, cc_sockaddr* addrs, int* numValidAddrs) {
+	struct sockaddr_in* addr4 = (struct sockaddr_in*)addrs[0].data;
 	char str[NATIVE_STR_LEN];
 	String_EncodeUtf8(str, address);
-
-	if (inet_aton(str, &addr->v4.sin_addr) > 0) return 0;
-	return ParseHost(addr, str);
+	*numValidAddrs = 1;
+	if (inet_aton(str, &addr4->sin_addr) > 0) {
+		addr4->sin_family = AF_INET;
+		addr4->sin_port   = htons(port);
+		
+		addrs[0].size = sizeof(*addr4);
+		return 0;
+	}
+	
+	return ParseHost(str, port, addrs, numValidAddrs);
 }
 
-int Socket_ValidAddress(const cc_string* address) {
-	union SocketAddress addr;
-	return ParseAddress(&addr, address) == 0;
-}
+cc_result Socket_Create(cc_socket* s, cc_sockaddr* addr, cc_bool nonblocking) {
+	struct sockaddr* raw = (struct sockaddr*)addr->data;
 
-cc_result Socket_Connect(cc_socket* s, const cc_string* address, int port, cc_bool nonblocking) {
-	union SocketAddress addr;
-	int res;
-
-	*s = -1;
-	if ((res = ParseAddress(&addr, address))) return res;
-
-	*s = net_socket(AF_INET, SOCK_STREAM, 0);
+	*s = net_socket(raw->sa_family, SOCK_STREAM, 0);
 	if (*s < 0) return *s;
 
 	if (nonblocking) {
 		int blocking_raw = -1; /* non-blocking mode */
 		net_ioctl(*s, FIONBIO, &blocking_raw);
 	}
+	return 0;
+}
 
-	addr.v4.sin_family = AF_INET;
-	addr.v4.sin_port   = htons(port);
-
-	res = net_connect(*s, &addr.raw, sizeof(addr.v4));
+cc_result Socket_Connect(cc_socket s, cc_sockaddr* addr) {
+	struct sockaddr* raw = (struct sockaddr*)addr->data;
+	
+	int res = net_connect(s, raw, addr->size);
 	return res < 0 ? res : 0;
 }
 
@@ -547,6 +566,8 @@ static void CreateRootDirectory(void) {
 
 void Platform_Init(void) {
 	fat_available = fatInitDefault();
+	Platform_ReadonlyFilesystem = !fat_available;
+
 	FindRootDirectory();
 	CreateRootDirectory();
 	
@@ -571,20 +592,23 @@ cc_bool Platform_DescribeError(cc_result res, cc_string* dst) {
 	return true;
 }
 
+cc_bool Process_OpenSupported = false;
+cc_result Process_StartOpen(const cc_string* args) {
+	return ERR_NOT_SUPPORTED;
+}
+
 
 /*########################################################################################################################*
 *-------------------------------------------------------Encryption--------------------------------------------------------*
 *#########################################################################################################################*/
 #if defined HW_RVL
-#include <ogc/es.h>
-
-static cc_result GetMachineID(cc_uint32* key) {
-	return ES_GetDeviceID(key);
-}
+	#define MACHINE_KEY "Wii_Wii_Wii_Wii_"
 #else
-static cc_result GetMachineID(cc_uint32* key) {
-	return ERR_NOT_SUPPORTED;
-}
+	#define MACHINE_KEY "GameCubeGameCube"
 #endif
 
+static cc_result GetMachineID(cc_uint32* key) {
+	Mem_Copy(key, MACHINE_KEY, sizeof(MACHINE_KEY) - 1);
+	return 0;
+}
 #endif

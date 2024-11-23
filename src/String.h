@@ -1,6 +1,8 @@
 #ifndef CC_STRING_H
 #define CC_STRING_H
 #include "Core.h"
+CC_BEGIN_HEADER
+
 /* 
 Provides various string related operations
    Also provides conversions betweens strings and numbers
@@ -25,17 +27,19 @@ static CC_INLINE cc_string String_Init(STRING_REF char* buffer, int length, int 
 CC_API int String_CalcLen(const char* raw, int capacity);
 /* Counts number of characters until a '\0' is found. */
 int String_Length(const char* raw);
+
+/* Constructs a string from a compile time string constant */
+#define String_FromConst(text) { (char*)(text), (sizeof(text) - 1), (sizeof(text) - 1)}
+/* Constructs a string from a compile time array */
+#define String_FromArray(buffer) { buffer, 0, sizeof(buffer)}
+
 /* Constructs a string from a (maybe null terminated) buffer. */
 CC_NOINLINE cc_string String_FromRaw(STRING_REF char* buffer, int capacity);
 /* Constructs a string from a null-terminated constant readonly buffer. */
 CC_API cc_string String_FromReadonly(STRING_REF const char* buffer);
-
-/* Constructs a string from a compile time string constant */
-#define String_FromConst(text) { text, (sizeof(text) - 1), (sizeof(text) - 1)}
-/* Constructs a string from a compile time array */
-#define String_FromArray(buffer) { buffer, 0, sizeof(buffer)}
 /* Constructs a string from a compile time array, that may have arbitary actual length of data at runtime */
 #define String_FromRawArray(buffer) String_FromRaw(buffer, sizeof(buffer))
+
 /* Constructs a string from a compile time array (leaving 1 byte of room for null terminator) */
 #define String_NT_Array(buffer) { buffer, 0, (sizeof(buffer) - 1)}
 /* Initialises a string from a compile time array. */
@@ -197,16 +201,16 @@ int Convert_CP437ToUtf8(char c, cc_uint8* data);
 
 /* Attempts to append all characters from UTF16 encoded data to the given string. */
 /* Characters not in code page 437 are omitted. */
-void String_AppendUtf16(cc_string* str, const void* data, int numBytes);
+CC_API void String_AppendUtf16(cc_string* str, const void* data, int numBytes);
 /* Attempts to append all characters from UTF8 encoded data to the given string. */
 /* Characters not in code page 437 are omitted. */
-void String_AppendUtf8(cc_string* str, const void* data, int numBytes);
+CC_API void String_AppendUtf8(cc_string* str, const void* data, int numBytes);
 /* Attempts to append all characters from CP-1252 encoded data to the given string. */
 /* Characters not in code page 437 are omitted. */
-void String_DecodeCP1252(cc_string* str, const void* data, int numBytes);
+CC_API void String_AppendCP1252(cc_string* str, const void* data, int numBytes);
 /* Encodes a string in UTF8 format, also null terminating the string. */
 /* Returns the number of bytes written, excluding trailing NULL terminator. */
-int String_EncodeUtf8(void* data, const cc_string* src);
+CC_API int String_EncodeUtf8(void* data, const cc_string* src);
 
 /* Attempts to convert the given string into an unsigned 8 bit integer. */
 CC_API cc_bool Convert_ParseUInt8(const cc_string*  str, cc_uint8* value);
@@ -268,4 +272,6 @@ void WordWrap_GetCoords(int index, const cc_string* lines, int numLines, int* co
 int  WordWrap_GetBackLength(const cc_string* text, int index);
 /* Returns number of characters from current character to start of next word. */
 int  WordWrap_GetForwardLength(const cc_string* text, int index);
+
+CC_END_HEADER
 #endif

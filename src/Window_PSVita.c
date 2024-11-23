@@ -11,42 +11,66 @@
 #include "Errors.h"
 #include "ExtMath.h"
 #include "Logger.h"
+#include "VirtualKeyboard.h"
 #include <vitasdk.h>
+
 static cc_bool launcherMode;
-static SceTouchPanelInfo frontPanel;
+static SceTouchPanelInfo frontPanel, backPanel;
 
 struct _DisplayData DisplayInfo;
-struct _WinData WindowInfo;
-// no DPI scaling on PS Vita
-int Display_ScaleX(int x) { return x; }
-int Display_ScaleY(int y) { return y; }
+struct cc_window WindowInfo;
 
-//#define BUFFER_WIDTH  960 TODO: 1024?
-#define SCREEN_WIDTH  960
-#define SCREEN_HEIGHT 544
+#define DISPLAY_WIDTH   960
+#define DISPLAY_HEIGHT  544
+#define DISPLAY_STRIDE 1024
+
+extern void Gfx_InitGXM(void);
+extern void Gfx_AllocFramebuffers(void);
+extern void Gfx_NextFramebuffer(void);
+extern void Gfx_UpdateCommonDialogBuffers(void);
+extern void (*DQ_OnNextFrame)(void* fb);
+static void DQ_OnNextFrame2D(void* fb);
+
+void Window_PreInit(void) {
+	sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
+	sceTouchSetSamplingState(SCE_TOUCH_PORT_BACK,  SCE_TOUCH_SAMPLING_STATE_START);
+}
 
 void Window_Init(void) {
-	DisplayInfo.Width  = SCREEN_WIDTH;
-	DisplayInfo.Height = SCREEN_HEIGHT;
-	DisplayInfo.Depth  = 4; // 32 bit
+	DisplayInfo.Width  = DISPLAY_WIDTH;
+	DisplayInfo.Height = DISPLAY_HEIGHT;
 	DisplayInfo.ScaleX = 1;
 	DisplayInfo.ScaleY = 1;
 	
-	WindowInfo.Width   = SCREEN_WIDTH;
-	WindowInfo.Height  = SCREEN_HEIGHT;
-	WindowInfo.Focused = true;
-	WindowInfo.Exists  = true;
+	Window_Main.Width    = DISPLAY_WIDTH;
+	Window_Main.Height   = DISPLAY_HEIGHT;
+	Window_Main.Focused  = true;
+	
+	Window_Main.Exists   = true;
+	Window_Main.UIScaleX = DEFAULT_UI_SCALE_X;
+	Window_Main.UIScaleY = DEFAULT_UI_SCALE_Y;
 
-	Input.Sources = INPUT_SOURCE_GAMEPAD;
-	sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
-	sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
-	sceTouchSetSamplingState(SCE_TOUCH_PORT_BACK,  SCE_TOUCH_SAMPLING_STATE_START);
+	Window_Main.SoftKeyboard = SOFT_KEYBOARD_VIRTUAL;
+	Input_SetTouchMode(true);
 	
 	sceTouchGetPanelInfo(SCE_TOUCH_PORT_FRONT, &frontPanel);
+	sceTouchGetPanelInfo(SCE_TOUCH_PORT_BACK,  &backPanel);
+	Gfx_InitGXM();
+	Gfx_AllocFramebuffers();
 }
 
-void Window_Create2D(int width, int height) { launcherMode = true;  }
-void Window_Create3D(int width, int height) { launcherMode = false; }
+void Window_Free(void) { }
+
+void Window_Create2D(int width, int height) { 
+	launcherMode   = true;  
+	DQ_OnNextFrame = DQ_OnNextFrame2D;
+}
+
+void Window_Create3D(int width, int height) { 
+	launcherMode = false; 
+}
+
+void Window_Destroy(void) { }
 
 void Window_SetTitle(const cc_string* title) { }
 void Clipboard_GetText(cc_string* value) { } // TODO sceClipboardGetText
@@ -60,7 +84,7 @@ int Window_IsObscured(void)            { return 0; }
 void Window_Show(void) { }
 void Window_SetSize(int width, int height) { }
 
-void Window_Close(void) {
+void Window_RequestClose(void) {
 	Event_RaiseVoid(&WindowEvents.Closing);
 }
 
@@ -68,83 +92,43 @@ void Window_Close(void) {
 /*########################################################################################################################*
 *----------------------------------------------------Input processing-----------------------------------------------------*
 *#########################################################################################################################*/
-static void HandleButtons(int mods) {
-	Input_SetNonRepeatable(CCPAD_A, mods & SCE_CTRL_TRIANGLE);
-	Input_SetNonRepeatable(CCPAD_B, mods & SCE_CTRL_SQUARE);
-	Input_SetNonRepeatable(CCPAD_X, mods & SCE_CTRL_CROSS);
-	Input_SetNonRepeatable(CCPAD_Y, mods & SCE_CTRL_CIRCLE);
-      
-	Input_SetNonRepeatable(CCPAD_START,  mods & SCE_CTRL_START);
-	Input_SetNonRepeatable(CCPAD_SELECT, mods & SCE_CTRL_SELECT);
-
-	Input_SetNonRepeatable(CCPAD_LEFT,   mods & SCE_CTRL_LEFT);
-	Input_SetNonRepeatable(CCPAD_RIGHT,  mods & SCE_CTRL_RIGHT);
-	Input_SetNonRepeatable(CCPAD_UP,     mods & SCE_CTRL_UP);
-	Input_SetNonRepeatable(CCPAD_DOWN,   mods & SCE_CTRL_DOWN);
-	
-	Input_SetNonRepeatable(CCPAD_L, mods & SCE_CTRL_LTRIGGER);
-	Input_SetNonRepeatable(CCPAD_R, mods & SCE_CTRL_RTRIGGER);
-}
-
-static void ProcessCircleInput(SceCtrlData* pad, double delta) {
-	float scale = (delta * 60.0) / 16.0f;
-	int dx = pad->lx - 127;
-	int dy = pad->ly - 127;
-	
-	if (Math_AbsI(dx) <= 8) dx = 0;
-	if (Math_AbsI(dy) <= 8) dy = 0;
-	
-	Event_RaiseRawMove(&PointerEvents.RawMoved, dx * scale, dy * scale);
-}
-
-
-static void ProcessTouchPress(int x, int y) {
-	if (!frontPanel.maxDispX || !frontPanel.maxDispY) {
-		// TODO: Shouldn't ever happen? need to check
-		Pointer_SetPosition(0, x, y);
-		return;
-	}
+static void AdjustTouchPress(const SceTouchPanelInfo* panel, int* x, int* y) {
+	if (!panel->maxDispX || !panel->maxDispY) return;
+	// TODO: Shouldn't ever happen? need to check
 	
 	// rescale from touch range to screen range
-	x = (x - frontPanel.minDispX) * SCREEN_WIDTH  / frontPanel.maxDispX;
-	y = (y - frontPanel.minDispY) * SCREEN_HEIGHT / frontPanel.maxDispY;
-	Pointer_SetPosition(0, x, y);
+	*x = (*x - panel->minDispX) * DISPLAY_WIDTH  / panel->maxDispX;
+	*y = (*y - panel->minDispY) * DISPLAY_HEIGHT / panel->maxDispY;
 }
 
-static void ProcessTouchInput(void) {
+static int touch_pressed;
+static void ProcessTouchInput(int port, int id, const SceTouchPanelInfo* panel) {
 	SceTouchData touch;
 	
 	// sceTouchRead is blocking (seems to block until vblank), and don't want that
-	int res = sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
+	int res = sceTouchPeek(port, &touch, 1);
 	if (res == 0) return; // no data available yet
 	if (res < 0)  return; // error occurred
+	int idx = 1 << id;
 	
-	if (touch.reportNum > 0) {
+	cc_bool isPressed = touch.reportNum > 0;
+	if (isPressed) {
 		int x = touch.report[0].x;
 		int y = touch.report[0].y;
-		ProcessTouchPress(x, y);
+		AdjustTouchPress(panel, &x, &y);
+
+		Input_AddTouch(id, x, y);
+		touch_pressed |= idx;
+	} else if (touch_pressed & idx) {
+		// touch.report[0].xy will be 0 when touch.reportNum is 0
+		Input_RemoveTouch(id, Pointers[id].x, Pointers[id].y);
+		touch_pressed &= ~idx;
 	}
-	Input_SetNonRepeatable(CCMOUSE_L, touch.reportNum > 0);
 }
 
-static void ProcessPadInput(double delta) {
-	SceCtrlData pad;
-	
-	// sceCtrlReadBufferPositive is blocking (seems to block until vblank), and don't want that
-	int res = sceCtrlPeekBufferPositive(0, &pad, 1);
-	if (res == 0) return; // no data available yet
-	if (res < 0)  return; // error occurred
-	// TODO: need to use cached version still? like GameCube/Wii
-	
-	HandleButtons(pad.buttons);
-	if (Input.RawMode)
-		ProcessCircleInput(&pad, delta);
-}
-
-void Window_ProcessEvents(double delta) {
-	/* TODO implement */
-	ProcessPadInput(delta);
-	ProcessTouchInput();
+void Window_ProcessEvents(float delta) {
+	ProcessTouchInput(SCE_TOUCH_PORT_FRONT, 0, &frontPanel);
+	ProcessTouchInput(SCE_TOUCH_PORT_BACK,  1, &backPanel);
 }
 
 void Cursor_SetPosition(int x, int y) { } // Makes no sense for PS Vita
@@ -155,69 +139,138 @@ void Window_DisableRawMouse(void) { Input.RawMode = false; }
 
 
 /*########################################################################################################################*
+*-------------------------------------------------------Gamepads----------------------------------------------------------*
+*#########################################################################################################################*/
+void Gamepads_Init(void) {
+	Input.Sources |= INPUT_SOURCE_GAMEPAD;
+
+	sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
+	
+	Input_DisplayNames[CCPAD_1] = "CIRCLE";
+	Input_DisplayNames[CCPAD_2] = "CROSS";
+	Input_DisplayNames[CCPAD_3] = "SQUARE";
+	Input_DisplayNames[CCPAD_4] = "TRIANGLE";
+}
+
+static void HandleButtons(int port, int mods) {
+	Gamepad_SetButton(port, CCPAD_1, mods & SCE_CTRL_CIRCLE);
+	Gamepad_SetButton(port, CCPAD_2, mods & SCE_CTRL_CROSS);
+	Gamepad_SetButton(port, CCPAD_3, mods & SCE_CTRL_SQUARE);
+	Gamepad_SetButton(port, CCPAD_4, mods & SCE_CTRL_TRIANGLE);
+      
+	Gamepad_SetButton(port, CCPAD_START,  mods & SCE_CTRL_START);
+	Gamepad_SetButton(port, CCPAD_SELECT, mods & SCE_CTRL_SELECT);
+
+	Gamepad_SetButton(port, CCPAD_LEFT,   mods & SCE_CTRL_LEFT);
+	Gamepad_SetButton(port, CCPAD_RIGHT,  mods & SCE_CTRL_RIGHT);
+	Gamepad_SetButton(port, CCPAD_UP,     mods & SCE_CTRL_UP);
+	Gamepad_SetButton(port, CCPAD_DOWN,   mods & SCE_CTRL_DOWN);
+	
+	Gamepad_SetButton(port, CCPAD_L, mods & SCE_CTRL_LTRIGGER);
+	Gamepad_SetButton(port, CCPAD_R, mods & SCE_CTRL_RTRIGGER);
+}
+
+#define AXIS_SCALE 16.0f
+static void ProcessCircleInput(int port, int axis, int x, int y, float delta) {
+	// May not be exactly 0 on actual hardware
+	if (Math_AbsI(x) <= 32) x = 0;
+	if (Math_AbsI(y) <= 32) y = 0;
+	
+	Gamepad_SetAxis(port, axis, x / AXIS_SCALE, y / AXIS_SCALE, delta);
+}
+
+static void ProcessPadInput(float delta) {
+	int port = Gamepad_Connect(0x503, PadBind_Defaults);
+	SceCtrlData pad;
+	
+	// sceCtrlReadBufferPositive is blocking (seems to block until vblank), and don't want that
+	int res = sceCtrlPeekBufferPositive(0, &pad, 1);
+	if (res == 0) return; // no data available yet
+	if (res < 0)  return; // error occurred
+	// TODO: need to use cached version still? like GameCube/Wii
+	
+	HandleButtons(port, pad.buttons);
+	ProcessCircleInput(port, PAD_AXIS_LEFT,  pad.lx - 127, pad.ly - 127, delta);
+	ProcessCircleInput(port, PAD_AXIS_RIGHT, pad.rx - 127, pad.ry - 127, delta);
+}
+
+void Gamepads_Process(float delta) {
+	ProcessPadInput(delta);
+}
+
+
+/*########################################################################################################################*
 *------------------------------------------------------Framebuffer--------------------------------------------------------*
 *#########################################################################################################################*/
 static struct Bitmap fb_bmp;
-void Window_AllocFramebuffer(struct Bitmap* bmp) {
-	bmp->scan0 = (BitmapCol*)Mem_Alloc(bmp->width * bmp->height, 4, "window pixels");
-	fb_bmp     = *bmp;
+void Window_AllocFramebuffer(struct Bitmap* bmp, int width, int height) {
+	bmp->scan0  = (BitmapCol*)Mem_Alloc(width * height, BITMAPCOLOR_SIZE, "window pixels");
+	bmp->width  = width;
+	bmp->height = height;
+	fb_bmp      = *bmp;
 }
 
-extern void* AllocGPUMemory(int size, int type, int gpu_access, SceUID* ret_uid);
-
-void Window_DrawFramebuffer(Rect2D r) {
-	static SceUID fb_uid;
-	static void* fb;
-	
-	// TODO: Purge when closing the 2D window, so more memory for 3D ClassiCube
-	// TODO: Use framebuffers directly instead of our own internal framebuffer too..
-	if (!fb) {
-		int size = 4 * SCREEN_WIDTH * SCREEN_HEIGHT;
-		fb = AllocGPUMemory(size, SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, 
-							SCE_GXM_MEMORY_ATTRIB_RW, &fb_uid);
-	}
-		
+void Window_DrawFramebuffer(Rect2D r, struct Bitmap* bmp) {
 	sceDisplayWaitVblankStart();
-	
-	SceDisplayFrameBuf framebuf = { 0 };
-	framebuf.size        = sizeof(SceDisplayFrameBuf);
-	framebuf.base        = fb;
-	framebuf.pitch       = SCREEN_WIDTH;
-	framebuf.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
-	framebuf.width       = SCREEN_WIDTH;
-	framebuf.height      = SCREEN_HEIGHT;
-
-	sceDisplaySetFrameBuf(&framebuf, SCE_DISPLAY_SETBUF_NEXTFRAME);
-
-	cc_uint32* src = (cc_uint32*)fb_bmp.scan0 + r.X;
-	cc_uint32* dst = (cc_uint32*)fb           + r.X;
-
-	for (int y = r.Y; y < r.Y + r.Height; y++) 
-	{
-		Mem_Copy(dst + y * SCREEN_WIDTH, src + y * fb_bmp.width, r.Width * 4);
-	}
+	Gfx_NextFramebuffer();
 }
 
 void Window_FreeFramebuffer(struct Bitmap* bmp) {
 	Mem_Free(bmp->scan0);
 }
 
-
-/*########################################################################################################################*
-*------------------------------------------------------Soft keyboard------------------------------------------------------*
-*#########################################################################################################################*/
-void Window_OpenKeyboard(struct OpenKeyboardArgs* args) { /* TODO implement */ }
-void Window_SetKeyboardText(const cc_string* text) { }
-void Window_CloseKeyboard(void) { /* TODO implement */ }
-
-
+static void DQ_OnNextFrame2D(void* fb) {
+	cc_uint32* src = (cc_uint32*)fb_bmp.scan0;
+	cc_uint32* dst = (cc_uint32*)fb;
+	
+	for (int y = 0; y < DISPLAY_HEIGHT; y++) 
+	{
+		Mem_Copy(dst + y * DISPLAY_STRIDE, src + y * DISPLAY_WIDTH, DISPLAY_WIDTH * 4);
+	}
+}
 /*########################################################################################################################*
 *-------------------------------------------------------Misc/Other--------------------------------------------------------*
 *#########################################################################################################################*/
+static void DQ_DialogCallback(void* fb) {
+	// TODO: Only clear framebuffers once at start
+	// NOTE: This also doesn't work properly on real hardware
+	//Mem_Set(fb, 128, 4 * DISPLAY_STRIDE * DISPLAY_HEIGHT);
+}
+
+static void DisplayDialog(const char* msg) {
+	SceMsgDialogParam param = { 0 };
+	SceMsgDialogUserMessageParam msgParam = { 0 };
+
+	sceMsgDialogParamInit(&param);
+	param.mode          = SCE_MSG_DIALOG_MODE_USER_MSG;
+	param.userMsgParam  = &msgParam;
+	
+	msgParam.msg        = msg;
+	msgParam.buttonType = SCE_MSG_DIALOG_BUTTON_TYPE_OK;
+
+	int ret = sceMsgDialogInit(&param);
+	if (ret) { Platform_Log1("ERROR SHOWING DIALOG: %e", &ret); return; }
+	
+	void (*prevCallback)(void* fb);	
+	prevCallback   = DQ_OnNextFrame;
+	DQ_OnNextFrame = DQ_DialogCallback;
+    
+	while (sceMsgDialogGetStatus() == SCE_COMMON_DIALOG_STATUS_RUNNING)
+	{
+		Gfx_UpdateCommonDialogBuffers();
+		Gfx_NextFramebuffer();
+		sceDisplayWaitVblankStart();
+	}
+	
+	sceMsgDialogTerm();
+	DQ_OnNextFrame = prevCallback;
+}
+
 void Window_ShowDialog(const char* title, const char* msg) {
 	/* TODO implement */
 	Platform_LogConst(title);
 	Platform_LogConst(msg);
+	DisplayDialog(msg);
 }
 
 cc_result Window_OpenFileDialog(const struct OpenFileDialogArgs* args) {
@@ -226,5 +279,24 @@ cc_result Window_OpenFileDialog(const struct OpenFileDialogArgs* args) {
 
 cc_result Window_SaveFileDialog(const struct SaveFileDialogArgs* args) {
 	return ERR_NOT_SUPPORTED;
+}
+
+
+/*########################################################################################################################*
+*------------------------------------------------------Soft keyboard------------------------------------------------------*
+*#########################################################################################################################*/
+void OnscreenKeyboard_Open(struct OpenKeyboardArgs* args) {
+	if (Input.Sources & INPUT_SOURCE_NORMAL) return;
+	kb_tileWidth = KB_TILE_SIZE * 2;
+
+	VirtualKeyboard_Open(args, launcherMode);
+}
+
+void OnscreenKeyboard_SetText(const cc_string* text) {
+	VirtualKeyboard_SetText(text);
+}
+
+void OnscreenKeyboard_Close(void) {
+	VirtualKeyboard_Close();
 }
 #endif

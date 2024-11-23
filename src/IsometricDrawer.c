@@ -40,13 +40,14 @@ static void IsometricDrawer_Flat(BlockID block, float size) {
 	TextureLoc loc = Block_Tex(block, FACE_ZMAX);
 	TextureRec rec = Atlas1D_TexRec(loc, 1, &texIndex);
 
-	struct VertexTextured v;
+	struct VertexTextured* v;
 	float minX, maxX, minY, maxY;
+	PackedCol color;
 	float scale;
 
 	*iso_state++ = texIndex;
-	v.Col = PACKEDCOL_WHITE;
-	Block_Tint(v.Col, block);
+	color = PACKEDCOL_WHITE;
+	Block_Tint(color, block);
 
 	/* Rescale by 0.70 in Classic mode to match vanilla size */
 	/* Rescale by 0.88 in Enhanced mode to be slightly nicer */
@@ -58,11 +59,12 @@ static void IsometricDrawer_Flat(BlockID block, float size) {
 	minX  = iso_posX - size; maxX = iso_posX + size;
 	minY  = iso_posY - size; maxY = iso_posY + size;
 
-	v.Z = 0.0f;
-	v.X = minX; v.Y = minY; v.U = rec.U1; v.V = rec.V1; *iso_vertices++ = v;
-	            v.Y = maxY;               v.V = rec.V2; *iso_vertices++ = v;
-	v.X = maxX;             v.U = rec.U2;               *iso_vertices++ = v;
-	            v.Y = minY;               v.V = rec.V1; *iso_vertices++ = v;
+	v = iso_vertices;
+	v->x = minX; v->y = minY; v->z = 0; v->Col = color; v->U = rec.u1; v->V = rec.v1; v++;
+	v->x = maxX; v->y = minY; v->z = 0; v->Col = color; v->U = rec.u2; v->V = rec.v1; v++;
+	v->x = maxX; v->y = maxY; v->z = 0; v->Col = color; v->U = rec.u2; v->V = rec.v2; v++;
+	v->x = minX; v->y = maxY; v->z = 0; v->Col = color; v->U = rec.u1; v->V = rec.v2; v++;
+	iso_vertices = v;
 }
 
 static void IsometricDrawer_Angled(BlockID block, float size) {
@@ -76,18 +78,18 @@ static void IsometricDrawer_Angled(BlockID block, float size) {
 	/* we need to divide by (2 * cosY), as the calling function expects size to be in pixels. */
 	scale = size / (2.0f * iso_cosY);
 
-	Drawer.MinBB = Blocks.MinBB[block]; Drawer.MinBB.Y = 1.0f - Drawer.MinBB.Y;
-	Drawer.MaxBB = Blocks.MaxBB[block]; Drawer.MaxBB.Y = 1.0f - Drawer.MaxBB.Y;
+	Drawer.MinBB = Blocks.MinBB[block]; Drawer.MinBB.y = 1.0f - Drawer.MinBB.y;
+	Drawer.MaxBB = Blocks.MaxBB[block]; Drawer.MaxBB.y = 1.0f - Drawer.MaxBB.y;
 	min = Blocks.MinBB[block]; max = Blocks.MaxBB[block];
 
-	Drawer.X1 = scale * (1.0f - min.X * 2.0f);
-	Drawer.X2 = scale * (1.0f - max.X * 2.0f);
-	Drawer.Y1 = scale * (1.0f - min.Y * 2.0f);
-	Drawer.Y2 = scale * (1.0f - max.Y * 2.0f);
-	Drawer.Z1 = scale * (1.0f - min.Z * 2.0f);
-	Drawer.Z2 = scale * (1.0f - max.Z * 2.0f);
+	Drawer.X1 = scale * (1.0f - min.x * 2.0f);
+	Drawer.X2 = scale * (1.0f - max.x * 2.0f);
+	Drawer.Y1 = scale * (1.0f - min.y * 2.0f);
+	Drawer.Y2 = scale * (1.0f - max.y * 2.0f);
+	Drawer.Z1 = scale * (1.0f - min.z * 2.0f);
+	Drawer.Z2 = scale * (1.0f - max.z * 2.0f);
 
-	bright = Blocks.FullBright[block];
+	bright = Blocks.Brightness[block];
 	Drawer.Tinted  = Blocks.Tinted[block];
 	Drawer.TintCol = Blocks.FogCol[block];
 
@@ -105,14 +107,14 @@ static void IsometricDrawer_Angled(BlockID block, float size) {
 		/*   Matrix_RotateX(&rotX, -30.0f * MATH_DEG2RAD); */
 		/*   Matrix_Mul(&iso_transform, &rotY, &rotX); */
 		/*   ...                                       */
-		/*   Vec3 vec = { v.X, v.Y, v.Z }; */
+		/*   Vec3 vec = { v.x, v.y, v.z }; */
 		/*   Vec3_Transform(&vec, &vec, &iso_transform); */
 		/* With all unnecessary operations either simplified or removed */
-		x = v->X * iso_cosY                              + v->Z * -iso_sinY;
-		y = v->X * iso_sinX * iso_sinY + v->Y * iso_cosX + v->Z * iso_sinX * iso_cosY;
+		x = v->x * iso_cosY                              + v->z * -iso_sinY;
+		y = v->x * iso_sinX * iso_sinY + v->y * iso_cosX + v->z * iso_sinX * iso_cosY;
 
-		v->X = x + iso_posX;
-		v->Y = y + iso_posY;
+		v->x = x + iso_posX;
+		v->y = y + iso_posY;
 	}
 }
 
@@ -129,7 +131,7 @@ void IsometricDrawer_AddBatch(BlockID block, float size, float x, float y) {
 	iso_posX = x; iso_posY = y;
 	/* See comment in Gfx_Make2DQuad() for why 0.5 is subtracted in D3D9 */
 	/* TODO pass as arguments? test diff */
-#ifdef CC_BUILD_D3D9
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_D3D9
 	iso_posX -= 0.5f; iso_posY -= 0.5f;
 #endif
 
@@ -156,7 +158,7 @@ void IsometricDrawer_Render(int count, int offset, int* state) {
 		if (state[i] == curIdx) continue;
 
 		/* Flush previous batch */
-		Gfx_BindTexture(Atlas1D.TexIds[curIdx]);
+		Atlas1D_Bind(curIdx);
 		Gfx_DrawVb_IndexedTris_Range(batchLen, batchBeg);
 
 		/* Reset for next batch */
@@ -165,6 +167,6 @@ void IsometricDrawer_Render(int count, int offset, int* state) {
 		batchLen = 0;
 	}
 
-	Gfx_BindTexture(Atlas1D.TexIds[curIdx]);
+	Atlas1D_Bind(curIdx);
 	Gfx_DrawVb_IndexedTris_Range(batchLen, batchBeg);
 }
