@@ -82,7 +82,7 @@ jobs:
           cp obj/classes.dex classes.dex
           $TOOLS_ROOT/aapt add -f obj/gsc-unsigned.apk classes.dex lib/armeabi/libgoldensparkscore.so lib/armeabi-v7a/libgoldensparkscore.so lib/arm64-v8a/libgoldensparkscore.so lib/x86/libgoldensparkscore.so lib/x86_64/libgoldensparkscore.so
           # sign the apk with debug key (https://stackoverflow.com/questions/16711233/)
-          cp obj/cc-unsigned.apk obj/gsc-signed.apk
+          cp obj/gsc-unsigned.apk obj/gsc-signed.apk
           jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore debug.keystore -storepass android -keypass android obj/gsc-signed.apk androiddebugkey
           # jarsigner -verbose
           # create aligned .apk file
