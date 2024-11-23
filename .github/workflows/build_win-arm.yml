@@ -2,7 +2,7 @@ name: Build latest (Windows ARM32/64)
 # trigger via either push to selected branches or on manual run
 on:
   push:
-      - main
+    branches:
       - master
   workflow_dispatch:
 
