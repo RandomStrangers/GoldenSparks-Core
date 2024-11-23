@@ -609,7 +609,7 @@ public class MainActivity extends Activity
 		if (curView == null) return;
 
 		// Try to avoid restarting input if possible
-		CCView view = (CCView)curView;
+		GSCView view = (GSCView)curView;
 		if (view.kbText != null) {
 			String curText = view.kbText.toString();
 			if (text.equals(curText)) return;
